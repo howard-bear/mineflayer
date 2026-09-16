@@ -1,0 +1,16 @@
+node_modules/
+*.log
+.env
+# 运行期状态,不进版本库
+home.json
+mychest.json
+places.json
+memory.json
+progress.json
+protect_probe.json
+# 部署产生的备份
+*.prev-*
+*.bak-*
+_new_bot.js
+STOP.on
+PROBE.on

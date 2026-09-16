@@ -1,0 +1,17 @@
+{
+  "name": "xiaomai-mineflayer-bot",
+  "version": "1.0.0",
+  "description": "一个由本地小模型驱动、以真人身份长期住在 Minecraft 服务器里的 mineflayer 机器人,以及运行它一年攒下的实测笔记",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "check": "node --check src/bot.real.js && node --check src/brain.js && node --check src/roles.js && node --check src/places.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-collectblock": "^1.6.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-pvp": "^1.3.2"
+  }
+}
