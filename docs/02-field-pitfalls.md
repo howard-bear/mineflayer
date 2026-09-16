@@ -13,10 +13,15 @@
 实测代价:被浆果丛(`sweet_berry_bush`)扎死 4 次 —— 因为避让清单只喂了一份。
 
 ```js
-// 两份都要配,一份都不能漏
+// 三份都要配,一份都不能漏(还有第三份在 mineflayer-pvp 手上)
 const cm = bot.collectBlock && bot.collectBlock.movements
 if (cm) { cm.allow1by1towers = false; cm.scafoldingBlocks = []; /* 避让清单也要喂 */ }
 ```
+
+🔴 **注意是"逐项修改它那份",不是"把你自己那份赋给它"。**
+如果你像我们一样为了不挖穿别人的建筑把 `canDig` 设成了 `false`,
+把那份交给 collectblock 会让**每一棵树都被静默跳过、零报错**。
+完整的源码链和三份 Movements 的全貌见 [07](07-three-movements.md)。
 
 ### 2. `bot.on('death')` 会对一次死亡重复触发
 
@@ -27,10 +32,18 @@ if (cm) { cm.allow1by1towers = false; cm.scafoldingBlocks = []; /* 避让清单�
 怀疑和传送有关(EssentialsX `/home` 会让服务端下发重生包),**尚未根治**。
 目前的三道关:① 以服务器聊天广播为准 ② 满血满饱食时忽略 ③ 30 秒内去重。
 
-### 3. `mineflayer-pvp` 用了废弃事件名
+### 3. `mineflayer-pvp` 的 `physicTick` 警告是噪音,不是 bug
 
-`PVP.js:51` 里写的是 `physicTick`(少一个 s),mineflayer 每 tick 警告一次。
-无害,但会在日志里刷出上百条 —— **别把它当成"崩溃重启"数进统计里**(我数错过一次)。
+`PVP.js:51` 用的是 `physicTick`(少一个 s)。**我一开始把它当成"功能失效"报了出去,是错的。**
+`mineflayer/lib/plugins/physics.js:85-86` 两个都发:
+
+```js
+bot.emit('physicsTick')
+bot.emit('physicTick') // Deprecated, only exists to support old plugins.
+```
+
+所以 pvp 照常工作,只是每次注册时打一行警告。
+**但别把它数进"崩溃重启"里** —— 详见 [09](09-plugins-and-ports.md),我就是这么数错过一次的。
 
 ### 4. 寻路的"自动搭桥/搭塔"会破坏别人的地
 

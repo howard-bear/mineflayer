@@ -100,6 +100,10 @@ node src/bot.js
 - [03 · 接本地小模型的坑](docs/03-local-small-model.md) —— `think:false`、菜单设计、结构化数据必须原样透传
 - [04 · 不碰别人东西的护栏](docs/04-guardrails.md) —— 在有真人玩的服务器上跑机器人的红线
 - [05 · "家" 有两份](docs/05-two-sources-of-truth.md) —— 服务端权威状态 vs 机器人自己记的,以及对不上时的死锁
+- [06 · 报错词典](docs/06-error-dictionary.md) —— 每条报错的**源码抛出点**与真实成因(四条报错性质完全不同,我一开始归成了一类)
+- [07 · 三份 Movements 的战争](docs/07-three-movements.md) —— `collectblock` / `pvp` / 你自己各有一份;`canDig` 会**静默吃掉整个功能**
+- [08 · `Promise.race` 的定时器泄漏](docs/08-promise-race-timer-leak.md) —— 一颗延迟 30 秒才炸、而且炸在别人身上的雷,以及怎么抓到它
+- [09 · 插件选型与公网端口](docs/09-plugins-and-ports.md) —— 三个默认在公网裸奔的调试界面,和三条「照做会出事」的社区建议
 
 ## 现状(诚实版)
 

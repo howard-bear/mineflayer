@@ -1219,9 +1219,67 @@ async function actGatherWood() {
       }
     } catch (e) { break }
     if (!block) break
+    const woodBeforeThis = woodCount()
+    /*
+     * 🔴 开工前把【全局 Movements】拨回 collectBlock 自己那份。
+     *    这是补我今晚自己捅的娄子 —— 如实记一下,免得以后忘了为什么有这段。
+     *
+     * 今晚我给 pvp 那份设了 canDig=false(为了不让它打完架之后挖穿别人的地),
+     * 但 CollectBlock.js:70 的 mineBlock 第一句读的是【全局当前】那份的 safeToBreak:
+     *   if (blockAt(...).type !== block.type || ... || !bot.pathfinder.movements.safeToBreak(block))
+     *     { removeTarget(block); return }
+     * 而 movements.js 的 safeToBreak 第一句是 `if (!this.canDig) return false`。
+     * → 只要 pvp 打过一架、把全局 Movements 换成了它那份,这棵树就会被【静默跳过】:
+     *   零木头、零报错,collect() 还正常 resolve。
+     *
+     * collect() 自己在开头也会装一次(CollectBlock.js:194),但那是在它被调用【之后】,
+     * 而且 pvp.attack() 随时能再换掉。在这里先拨回来,至少把"刚打完架"这个最常见的情形盖住;
+     * 路上才打起来的那种,下面那段 🔬 诊断会如实记下来。
+     *
+     * ⚠️ 不走"把 pvp 的 canDig 改回 true"这条路:那等于把刚补上的护栏又拆了。
+     */
+    try {
+      const cmv0 = bot.collectBlock && bot.collectBlock.movements
+      const gm0 = bot.pathfinder && bot.pathfinder.movements
+      if (cmv0 && gm0 !== cmv0) {
+        const whose = gm0 === (bot.pvp && bot.pvp.movements) ? 'pvp 那份'
+          : gm0 === myMoves ? '我自己那份' : '不认识的第四份'
+        bot.pathfinder.setMovements(cmv0)
+        log(`🔧 开工前把全局寻路配置从「${whose}」(canDig=${gm0 ? gm0.canDig : '?'})拨回 collectBlock 自己那份`
+          + ` —— 不拨回来的话这棵树会被静默跳过(零木头零报错)`)
+      }
+    } catch (e) { log('拨回寻路配置失败:', e.message) }
     try {
       await bot.collectBlock.collect(block)   // 走过去 + 挖掉 + 捡起掉落物
       dug++
+      /*
+       * 🔬 诊断「静默跳过」:collect() 正常返回(不抛错)却一块木头都没多。
+       *
+       * 机制是读 collectblock 1.6.0 的源码得到的,不是猜的:
+       *   CollectBlock.js:70 的 mineBlock 第一句 ——
+       *     if (… || !bot.pathfinder.movements.safeToBreak(block)) { removeTarget(block); return }
+       *   它读的是【全局当前】那份 Movements,而不是 collect() 开头给自己装上的那份;
+       *   movements.js:252 的 safeToBreak 第一句 —— if (!this.canDig) return false。
+       *
+       * 而我们给 pvp 那份设了 canDig=false(为了不让它挖穿别人的地),
+       * pvp.attack() 又会把全局 Movements 换成它那份。
+       * → 走过去的那几秒里一旦打起来,这棵树就被【静默跳过】:零木头、零报错、
+       *   collect() 还正常 resolve。178 次尝试里那批"既不成功也不报错"的很可能就是它。
+       *
+       * ⚠️ 这条只是取证。证实之前不改行为 —— canDig 同时管着"寻路能不能挖路开道",
+       *    直接放开会让它挖穿别人的建筑,那是 Owner 的红线。
+       */
+      if (woodCount() === woodBeforeThis) {
+        const gm = bot.pathfinder && bot.pathfinder.movements
+        const cmv = bot.collectBlock && bot.collectBlock.movements
+        const pmv = bot.pvp && bot.pvp.movements
+        const which = gm === cmv ? 'collectBlock 自己那份(正常)'
+          : gm === pmv ? '🔴 pvp 那份'
+          : gm === myMoves ? '🔴 我自己那份'
+          : '未知的第四份'
+        log(`🔬 挖完 ${block.name} (${Math.round(block.position.x)},${Math.round(block.position.z)}) 却一块木头没多`
+          + ` —— 此刻全局 Movements 是「${which}」canDig=${gm ? gm.canDig : '?'}`)
+      }
       // ⚠️ collect() 会把全局 movements 换成它自己那份且不还原 —— 每次都换回我的
       if (myMoves) { try { bot.pathfinder.setMovements(myMoves) } catch (e) { /* 忽略 */ } }
     } catch (e) {
@@ -1426,7 +1484,31 @@ async function actExplore(dirName) {
      *       ③ 超时从 75 秒降到 20 秒:短途本来就该快,而动作封顶是 30 秒。
      */
     const d0 = 24 + Math.random() * 16
-    const g = new goals.GoalNear(from.x + Math.cos(a) * d0, from.y, from.z + Math.sin(a) * d0, 4)
+    /*
+     * 🔴🔴 2026-09-17 凌晨:「走不出去」的真因终于找到了 —— 不是地形,是【目标本身不可达】。
+     *
+     * 上面那段注释里我已经改过一轮(把一口气 90~150 格降到 24~40 格、成功门槛降到 8 格),
+     * 治的是症状。真正的病根在这一行用的 Goal 类型:
+     *
+     *   原来:new goals.GoalNear(目标x, 【from.y】, 目标z, 4)
+     *
+     * 源码实据(node_modules/mineflayer-pathfinder/lib/goals.js,我们实际装的 2.4.5):
+     *   GoalNear.isEnd:  (dx*dx + 【dy*dy】 + dz*dz) <= rangeSq     ← 三维,算高度
+     *   GoalNearXZ.isEnd: (dx*dx + dz*dz) <= rangeSq               ← 只算水平
+     *   而 GoalNearXZ 上面那行库作者自己的注释原话是:
+     *   "Useful for finding builds that you don't have an exact Y level for,
+     *    just an approximate X and Z level" —— 说的正是我们这个场景。
+     *
+     * 所以原来的写法是:要求它走到 30 多格外、【而且那里的地面高度正好和现在一样(±4)】。
+     * 在丘陵/山谷地形上这个条件几乎不成立 → 目标点根本不可达 →
+     * A* 要么超时(`Took to long to decide path to goal!`),
+     * 要么返回空路径,而 goto 对空路径是【无错误地 resolve】(goto.js:22-24,上游已承认是 bug)
+     * → 我们这边测出"只挪了 N 格"记成失败。
+     *
+     * 一句话:我一直在让它去一个不存在的地方,然后怪它走不到。
+     * 改成 GoalNearXZ:只要求走到那个【水平位置】附近,地面高低随地形 —— 这才是"往西北走 30 格"的本意。
+     */
+    const g = new goals.GoalNearXZ(from.x + Math.cos(a) * d0, from.z + Math.sin(a) * d0, 4)
     try {
       await Promise.race([
         bot.pathfinder.goto(g),
@@ -1457,7 +1539,8 @@ async function actExplore(dirName) {
   if (ang === null) return '失败:四面八方近处都是水,这地方不能探,先想办法离开水边'
   // 和上面同样的道理:短途才走得到。一口气奔 90~150 格是"来回跑"的根源。
   const d = 24 + Math.random() * 16
-  const goal = new goals.GoalNear(from.x + Math.cos(ang) * d, from.y, from.z + Math.sin(ang) * d, 4)
+  // 同上:水平目标,不要求高度一致(理由见上面 explore 那段 GoalNearXZ 的注释)
+  const goal = new goals.GoalNearXZ(from.x + Math.cos(ang) * d, from.z + Math.sin(ang) * d, 4)
   try {
     await Promise.race([
       bot.pathfinder.goto(goal),
@@ -1476,7 +1559,8 @@ async function actExplore(dirName) {
 function actWander() {
   const p = bot.entity.position
   try {
-    bot.pathfinder.setGoal(new goals.GoalNear(p.x + (Math.random() * 2 - 1) * 16, p.y, p.z + (Math.random() * 2 - 1) * 16, 2))
+    // 同上:水平目标。"随便走走"更不该要求高度一致 —— 半径才 2 格,山坡上必然不可达。
+    bot.pathfinder.setGoal(new goals.GoalNearXZ(p.x + (Math.random() * 2 - 1) * 16, p.z + (Math.random() * 2 - 1) * 16, 2))
     return '成功:随便走走'
   } catch (e) {
     return `失败:走不了(${short(e.message)})`
@@ -1734,7 +1818,13 @@ function actFlee() {
     let away = p.minus(d.entity.position)
     if (!away.norm || away.norm() < 0.001) away = { x: 1, z: 0 }   // 贴脸时给个默认方向,免得 NaN
     else { const n = away.normalize(); away = { x: n.x * 24, z: n.z * 24 } }
-    bot.pathfinder.setGoal(new goals.GoalNear(p.x + away.x, p.y, p.z + away.z, 3))
+    /*
+     * 🔴 逃跑也踩了同一个坑(GoalNear 算高度)—— 而这一条是【保命】动作。
+     * 24 格外 + 半径 3 格 + 要求地面高度和现在一样,在山坡上必然不可达 →
+     * A* 超时或返回空路径 → 它【根本不逃】,站在原地被打死。
+     * 改 GoalNearXZ:往反方向的那个水平位置跑,高低随地形。
+     */
+    bot.pathfinder.setGoal(new goals.GoalNearXZ(p.x + away.x, p.z + away.z, 3))
     return `成功:躲开 ${d.name}(往反方向跑)`
   } catch (e) {
     return `失败:逃不掉(${short(e.message)})`
@@ -2336,6 +2426,9 @@ function reflexTick() {
         if (myMoves) myMoves.maxDropDown = wantDrop
         const cmv = bot.collectBlock && bot.collectBlock.movements
         if (cmv) cmv.maxDropDown = wantDrop
+        // 第三份:pvp 的。残血时最容易摔死的场景恰恰是被怪追着跑,而那时生效的正是这一份。
+        const pmv = bot.pvp && bot.pvp.movements
+        if (pmv) pmv.maxDropDown = wantDrop
         log(`🪂 血量 ${bot.health} → 寻路最大落差改成 ${wantDrop} 格(掉落伤害=落差-3,残血时 4 格就能要命)`)
       }
     } catch (e) { /* 改不了就照旧,不能因此让反射层挂掉 */ }
@@ -3466,14 +3559,42 @@ async function actTick() {
   actingAction = action             // 完整对象 —— 被打断后要靠它原样回来
   actingSince = Date.now()
   interruptedFor = ''               // 新动作开始 → 重新允许打断一次
+  /*
+   * 🔴 超时封顶的定时器【必须显式取消】—— 这是 2026-09-17 凌晨用诊断钩子当场抓到的 bug。
+   *
+   * 原来写的是 `Promise.race([executeAction(action), new Promise(res => setTimeout(...))])`。
+   * 问题:**Promise.race 不会取消输掉的那一边**。动作正常完成后,
+   * 那个 30 秒的 setTimeout 还活着 —— 30 秒后照样触发,
+   * 对着【当时正在跑的另一个动作】执行 setGoal(null) + stopDigging()。
+   *
+   * 而决策是每 2.5 秒一次(BRAIN_FLOOR_MS),等于空中永远飘着一串"定时炸弹",
+   * 每颗在自己那个动作结束 30 秒后炸一次别人。
+   *
+   * 现场证据(诊断钩子打出来的调用链,同一个 bot.real.js:3473):
+   *   「gather_wood」跑了 29999ms 时目标被改成 null  ← 合理,是它自己的封顶
+   *   「goto_place」 跑了  3212ms 时目标被改成 null  ← 才跑 3.2 秒,不可能是它自己的
+   *   「explore」    跑了  2645ms 时目标被改成 null  ← 同上
+   *
+   * 这同时解释了两类报错:setGoal(null) → `The goal was changed before it could be completed!`
+   * (见 mineflayer-pathfinder 的 lib/goto.js:34,它监听 goal_updated);
+   * stopDigging() → `Digging aborted`。
+   *
+   * ⚠️ 教训:**Promise.race 里任何带副作用的定时器都必须 clearTimeout**,
+   *    否则副作用会延迟到别人身上 —— 而且因为延迟,现场看起来和起因毫无关系。
+   */
+  let capTimer = null
   try {
     const outcome = await Promise.race([
       executeAction(action),
-      new Promise((res) => setTimeout(() => {
-        try { bot.pathfinder.setGoal(null) } catch (e) { /* 忽略 */ }
-        try { bot.stopDigging() } catch (e) { /* 没在挖就会抛,忽略 */ }
-        res(`失败:这个动作卡了 ${ACT_CAP_MS / 1000} 秒还没做完,我掐掉了 —— 不能让一个动作把大脑堵死`)
-      }, ACT_CAP_MS)),
+      new Promise((res) => {
+        capTimer = setTimeout(() => {
+          capTimer = null   // 自己已经触发了,finally 里就别再 clear
+          log(`⏱️ 「${action.action}」卡了 ${ACT_CAP_MS / 1000} 秒,掐掉(停寻路 + 停挖掘)`)
+          try { bot.pathfinder.setGoal(null) } catch (e) { /* 忽略 */ }
+          try { bot.stopDigging() } catch (e) { /* 没在挖就会抛,忽略 */ }
+          res(`失败:这个动作卡了 ${ACT_CAP_MS / 1000} 秒还没做完,我掐掉了 —— 不能让一个动作把大脑堵死`)
+        }, ACT_CAP_MS)
+      }),
     ])
     lastAction = action.action + (action.player ? `(${action.player})` : '')
     lastOutcome = outcome
@@ -3535,6 +3656,8 @@ async function actTick() {
     log('执行动作出错:', e.message)
     lastOutcome = `失败:出错了(${short(e.message)})`
   } finally {
+    // 动作已经结束 —— 把封顶定时器拆掉,绝不让它 30 秒后去炸别的动作
+    if (capTimer) { clearTimeout(capTimer); capTimer = null }
     acting = false
     actingAction = null
   }
@@ -3813,6 +3936,53 @@ function createBot() {
         myMoves = moves
 
         /*
+         * 🔬 纯诊断,不改任何行为:到底是谁在【长动作跑到一半】时改了寻路目标。
+         *
+         * 取证(2026-09-17 凌晨,25 分钟窗口):砍树失败 30 次,分三类 ——
+         *   Digging aborted 13、The goal was changed 10、Took to long 7。
+         * 失败当时的身体状态:血量平均 19.2、最低 17.0,【血量 ≤10 的是 0/29】。
+         * → **不是保命反射干的**(反射要血量 ≤6/≤8 才动手)。我本来会猜错,数据拦住了。
+         *
+         * 唯一的强信号是"紧接着有新决策"(abort 10/13、goalchg 8/9),
+         * 可 actTick 里明明有护栏:耗时动作不会被普通动作打断,会进 queuedNext 排队。
+         * 而全文有 20 多处会改寻路目标(actFlee / wander / 各种 goto / 反射层…),
+         * 光读代码分辨不出是哪一处 —— 所以在唯一的出口上记调用栈,让现场自己说话。
+         *
+         * 开销:平时只是一个布尔判断;只有 acting 为真才取栈,再加 10 秒节流。
+         * 📖 机制(读 mineflayer-pathfinder 2.4.5 的 lib/goto.js 得到,不是猜的):
+         *    goto() 会监听 'goal_updated',只要别人调了 setGoal 且新目标不是它自己那个,
+         *    就立刻 reject('GoalChanged')。而 collectBlock 内部自己会调 goto ——
+         *    所以【任何】外部 setGoal 都能掐掉正在进行的砍树。
+         *    ⚠️ 另外两条报错性质完全不同,别混为一谈:
+         *      · 'Took to long to decide path to goal!' 是 A* 在 thinkTimeout(默认 5000ms)
+         *        内【没算出路来】,不是被打断;
+         *      · 'Digging aborted' 不在 pathfinder 里,是 mineflayer 核心的挖掘中断。
+         *
+         * ⚠️ 这是【诊断】不是修复。查清楚之前不动任何行为 —— 静默地猜着改,等于没修。
+         */
+        try {
+          const origSetGoal = bot.pathfinder.setGoal.bind(bot.pathfinder)
+          let lastGoalLogAt = 0
+          bot.pathfinder.setGoal = function (goal, dynamic) {
+            try {
+              // >1500ms 是为了跳过【动作自己开场那次 setGoal】——
+              // 否则开场那一次会把 10 秒节流窗口吃掉,真正的打断者反而记不到。
+              if (acting && actingName && Date.now() - actingSince > 1500
+                  && Date.now() - lastGoalLogAt > 10000) {
+                lastGoalLogAt = Date.now()
+                const where = String(new Error().stack || '').split('\n').slice(2, 7)
+                  .map((s) => s.trim().replace(/^at\s+/, '').replace(/\/home\/[^\s)]*\//g, ''))
+                  .join(' ← ')
+                log(`🔬 「${actingName}」跑了 ${Date.now() - actingSince}ms 时,有人把寻路目标改成 `
+                  + `${goal && goal.constructor ? goal.constructor.name : String(goal)} —— 调用链:${where}`)
+              }
+            } catch (e) { /* 诊断本身绝不能影响寻路 */ }
+            return origSetGoal(goal, dynamic)
+          }
+          log('🔬 已挂上「寻路目标被谁改了」的诊断钩子(只记录,不改行为)')
+        } catch (e) { log('挂诊断钩子失败:', e.message) }
+
+        /*
          * 🔴 放方块的【总闸】—— 不再跟寻路库的内部状态捉迷藏。
          *
          * CoreProtect 实据:即使我在启动时已经禁掉了搭塔、清空了脚手架清单
@@ -3876,6 +4046,83 @@ function createBot() {
             log('⚠️ 拿不到 collectBlock.movements,砍树时仍可能搭塔')
           }
         } catch (e) { log('配置 collectBlock 寻路失败:', e.message) }
+        /*
+         * 🔴 mineflayer-pvp 也自带一份 Movements,而且【全是默认值】。
+         *    这是第三份,也是唯一一份我从来没配过的 —— 2026-09-17 凌晨按 Owner 的要求
+         *    去查社区资料时,从源码里查出来的。
+         *
+         * 源码实据(node_modules/mineflayer-pvp/lib/PVP.js,我们实际装的 1.3.2):
+         *   :50  this.movements = new Movements(bot, require('minecraft-data')(bot.version))
+         *   :70  if (this.movements) pathfinder.setMovements(this.movements)   ← 每次 attack() 都装上
+         *   打完架【不还原】。
+         * 而 pathfinder 2.4.5 的默认值(lib/movements.js)是:
+         *   :23 canDig = true      :31 allow1by1towers = true
+         *   :76 scafoldingBlocks = [dirt, cobblestone]
+         *   :49 blocksToAvoid 只有 fire / cobweb / lava —— 【没有浆果丛】
+         *
+         * 🔑 这解开了上面(原第 3897 行附近)那个我一直没解开的谜:
+         *    「我明明已经禁掉搭塔、清空脚手架清单了,它仍然在 09-16 01:08 放下圆石,
+         *      而且 x=49,50,51,52 同一高度连成一排」。
+         *    我当时归因成"横向搭桥和垂直搭塔是两回事"。**真相是:**
+         *    【打完一架之后,生效的是 pvp 这份带泥土+圆石脚手架的默认配置】——
+         *    横向搭桥用的也是 scafoldingBlocks,而我清空过的那一份当时已经被顶掉了。
+         *    同理,打完架之后浆果丛绕行清单也是空的 —— 这可能是"浆果丛修复后仍被扎死"的第二个源头。
+         *
+         * 🔑 修法选的是【把三份都配安全】,不是"事后还原":
+         *    还原方案要和 pvp/collectblock 赛跑(它们在 attack()/collect() 的第一时间就 setMovements),
+         *    而"谁生效都安全"没有竞态。这和"放方块总闸设在唯一出口"是同一个思路。
+         */
+        try {
+          const pm = bot.pvp && bot.pvp.movements
+          if (pm) {
+            pm.canDig = false
+            pm.allow1by1towers = false
+            pm.scafoldingBlocks = []
+            pm.canOpenDoors = false
+            pm.liquidCost = 20
+            let addedP = 0
+            for (const n of AVOID_BLOCKS) {
+              const b = mcData.blocksByName[n]
+              if (b && pm.blocksToAvoid && !pm.blocksToAvoid.has(b.id)) { pm.blocksToAvoid.add(b.id); addedP++ }
+            }
+            log(`已禁掉 pvp 自带寻路的挖路/搭塔/脚手架/开门,并给它补了 ${addedP} 种绕开的方块`
+              + ` —— 这是第三份 Movements,在此之前它一直是默认值(能挖、能搭、不认浆果丛)`)
+          } else {
+            log('⚠️ 拿不到 bot.pvp.movements,打完架之后寻路仍可能挖路搭塔')
+          }
+        } catch (e) { log('配置 pvp 寻路失败:', e.message) }
+        /*
+         * 🔬 NaN 位置探针 —— 只记录,不改行为。
+         *
+         * 依据 mineflayer 4.39.0 的 lib/plugins/physics.js:81 / 105 / 129 / 162,
+         * 四处都有 `if (!Number.isFinite(bot.entity.position.x)) return`。
+         * 一旦位置变成 NaN,physics 就【永久 early-return】:走不动、拿不到吃的、
+         * pathfinder 全部超时返回 —— 这正是"站着饿死"和"explore 只挪几格"的形态。
+         * 上游 open issue #3882(环境 Paper 1.21.4,和我们一模一样)的原话大意是:
+         * 被打一下之后机器人冻住,直到被打死或者重连才恢复。修复 PR #3883 至今未合并,
+         * 4.39.0 里这个 bug 还在。
+         *
+         * ⚠️ 社区那个"记住上一个合法位置再写回去"的 workaround 今晚【坚决不上】——
+         *    报告人自己说"能用,但它把所有击退效果都吃掉了",那是改战斗手感,不是诊断。
+         *    先只量:如果一晚一次都不触发,这条就彻底划掉;如果反复触发,
+         *    那"动作转化率低"的所有结论都要重估。
+         */
+        try {
+          let nanHits = 0
+          let lastNanLog = 0
+          bot.on('physicsTick', () => {
+            const p = bot.entity && bot.entity.position
+            if (!p) return
+            if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) return
+            nanHits++
+            if (Date.now() - lastNanLog < 10000) return   // 节流,别刷爆日志
+            lastNanLog = Date.now()
+            let v = '?'
+            try { v = JSON.stringify(bot.entity.velocity) } catch (e2) { /* 取不到就算了 */ }
+            log(`🧊 位置变成 NaN 了(累计 ${nanHits} 次)—— physics 会永久停摆,它从此走不动也吃不上饭。速度=${v}`)
+          })
+          log('🔬 已挂上 NaN 位置探针(只记录,不改行为)')
+        } catch (e) { log('挂 NaN 探针失败:', e.message) }
         ready = true
         log(`寻路就绪。大目标=${CFG.goalText},现有木头 ${woodCount()} 块,经验记忆 ${memory.count()} 条`)
         // 保命反射:每秒一次,不经过大脑(大脑 25 秒才想一次,来不及)
