@@ -1,6 +1,7 @@
 # 我调了停止,它没停 —— 而换一种停法,它会假装成功
 
-> 动作封顶到点,我们调 `setGoal(null)` 把砍树掐掉。日志显示掐掉了 **171 次,其中 170 次是砍树**。
+> 动作封顶到点,我们调 `setGoal(null)` 把砍树掐掉。日志显示掐掉了 **227 次,其中 220 次是砍树**
+> (截至 2026-09-17 10:48 UTC)。
 > 然后下一个动作开始走路,和一个"已经被掐掉"的任务抢寻路器。
 >
 > 我第一版的解释是:错误被库吞掉了。**那个解释是错的,而我已经把它发给了另一个会话。**
@@ -168,19 +169,65 @@ bot.pathfinder.stop = () => { stopPathing = true }   // 只举一个闩,什么�
   → 刚挂上的监听器当场 reject PathStopped      ← 一步都没走
 ```
 
-实测(`goto.js` 用真身,`index.js` 的 `setGoal`/`stop`/`resetPath` 按行号复刻):
+实测(`mineflayer-pathfinder 2.4.5` 原包,把真的 `inject()` 装到一个桩 bot 上跑,
+不是复刻):
 
 ```
-① 正常 goto,没人动过闩                → RESOLVED
-② 先 stop() 举起闩,再开一个全新 goto    → PathStopped   ← 一步没走
-③ 举闩后先 setGoal(null) 清场,再 goto  → RESOLVED
+举闩后,清场动作 →   吃掉闩?  下一个 goto
+① 什么都不做            否      REJECT:PathStopped   ← 一步没走
+② setGoal(null)         是      进入寻路,没被拒
+③ setMovements(...)     是      进入寻路,没被拒
+对照:从未 stop()         —      进入寻路,没被拒
 ```
 
-**修法**:`cancelTask` 超时放弃之后,补一次 `bot.pathfinder.setGoal(null)` ——
-它的 `resetPath` 会顺带把闩吃掉(上面③已验证)。
+("进入寻路,没被拒"= 120 毫秒内没有 reject。桩 bot 不跑 physicsTick,
+所以它不会真的走到、也不会 resolve —— 这里要证的只是"有没有被当场拒掉"。)
 
-只有下一次 `collect()` 能自愈:`CollectBlock.js:195` 每次开头无条件 `setMovements`,
-那次 `resetPath` 会把闩无害地吃掉。**别的动作都是受害者。**
+脚本在 [`verify/latch.mjs`](verify/latch.mjs),`npm i mineflayer-pathfinder@2.4.5 minecraft-data vec3`
+之后直接 `node latch.mjs` 就能复现。
+
+**修法**:`cancelTask` 超时放弃之后,补一次会走 `resetPath` 的调用,把闩当场吃掉。
+②③都行。线上选的是 `setMovements`,因为它**同时**做两件事:吃掉闩,
+并且把 `collect()` 改过的 `Movements` 拨回自己那份 ——
+`CollectBlock.js:192-196`(在 `this.movements` 非空时)每次开头都会把
+`dontMineUnderFallingBlock` 和 `dontCreateFlow` 按它自己的需要改掉,然后塞进全局。
+
+**闩只咬一个人:举闩之后,第一个调 `resetPath` 的那个。**
+如果那是一次真的 `goto`,它当场死;如果那是 `setGoal` / `setMovements` 这类"清场"调用,
+闩就被无害地吸收掉了。也就是说,**会不会出事故,取决于下一个动作恰好是谁** ——
+这不是一个你想拿来当保障的判据。下一节就是这句话的现场版本。
+
+## 现场:它一次都没咬到人 —— 而原因比那颗雷本身更值得记
+
+修法上线后,平级会话按上线时刻(2026-09-17 07:31:53 UTC)前后各取三小时对了一遍:
+
+| | 上线前 3 小时 | 上线后 3 小时 |
+|---|---|---|
+| `gather_wood` 被掐 | 36 次 | 39 次 |
+| "只挪了 0~1 格"的指纹 | 5 次 | 3 次 |
+| `PathStopped` | **0 次** | **0 次** |
+
+**这颗雷在现场一次都没响。** 不是我算错了 —— 机制逐行核过,上面①也稳定复现 ——
+而是它**被另一个毫不相干的修复挡住了**:
+
+同一天为了堵 collectBlock 的 `canDig=true` 泄漏,几个动作在走路前会把全局 `Movements`
+拨回自己那份。而 `setMovements` 走 `resetPath`,`resetPath` 的末尾就是那句
+`if (stopPathing) return stop()`(`index.js:139`)。
+**一个为了别的事情写的修复,顺手把闩吃掉了。**
+
+> **两个独立的修复,可能在谁都不知道的地方互相掩护 ——
+> 于是第二个 bug 在现场永远不表现,直到有人拿掉第一个修复。**
+
+这是 [17](17-guardrails-disarming-each-other.md)「护栏互相拆台」的**反面**,而且更难发现:
+拆台会立刻出事故,你至少知道该去查;**掩护什么都不发生**,于是你会以为问题不存在。
+它的寿命等于那个无关修复的寿命,而删掉那个修复的人,不会知道自己同时拆掉了什么。
+
+而且这层掩护**是不完整的**:拨回 `Movements` 只发生在三个动作里,
+`explore` / `wander` / `flee` / 追击都不拨。所以"0 次"的正确读法不是"不可能发生",
+是"举闩之后第一个调 `resetPath` 的,恰好一直是被覆盖的那几个"。
+(那 3 次"只挪了 0~1 格"另有原因 —— 日志里没有 `PathStopped`,不是这条。)
+
+**所以显式修复照样加了。** 靠巧合免疫和没有 bug,是两回事。
 
 ## 上游知道吗
 
@@ -213,6 +260,10 @@ bot.pathfinder.stop = () => { stopPathing = true }   // 只举一个闩,什么�
    `pathfinder.stop()` 延迟生效、产生会被吞掉的 `PathStopped`、留一个没人清的闩。
    一句话版:**`stop()` 是"下次路径推进时给我停",`setGoal(null)` 是"现在就把目标抹掉"。**
 
+**5. 现场没复现,可能是被另一个修复盖住了,不是它不存在。**
+   证据的方向只有一个:机制成立 + 现场为零 = **去找是谁挡住的**,
+   而不是"看来不用管"。找不到那个挡住的人,你就是在靠运气过日子。
+
 > **别问"我调停止了吗",问"谁在听,它听见之后会告诉谁"。**
 
 ---
@@ -222,11 +273,16 @@ bot.pathfinder.stop = () => { stopPathing = true }   // 只举一个闩,什么�
 - 「`PathStopped` 被吞掉导致假成功」这个解释是我第一版的结论,**已经推翻**,
   但整段留在上面没删 —— 它错的方式比它本身更值得看:一条读起来完全通顺的因果链,
   断在离自己代码最近的那一环上。
-- 「被掐 171 次,其中 170 次是 gather_wood」来自另一个会话的计数器,**我没有独立复核**。
-  按上面的分析,这 171 次里真正产生 `PathStopped` 的**一次都没有**(封顶调的是
-  `setGoal(null)`)。所以这个数是"封顶触发次数",**不能当成 `PathStopped` 的发生次数**。
-- `index.js` 的 `setGoal` / `stop` / `resetPath` 在实测脚本里是**按行号复刻**的
-  (它们是闭包内部函数,没法直接 require)。`goto.js` 和 `CollectBlock.js` 都是原包真身。
+- 「被掐 227 次,其中 220 次是 gather_wood」(截至 2026-09-17 10:48 UTC)来自另一个会话,
+  判据是日志行 `⏱️ 「X」卡了` 的**行计数**,不是进程内计数器(所以不受重启清零影响)。
+  **我没有独立复核。** 按上面的分析,这 227 次里真正产生 `PathStopped` 的**一次都没有**
+  (封顶调的是 `setGoal(null)`)。所以这个数是"封顶触发次数",**不能当成 `PathStopped` 的发生次数**。
+- 实测脚本现在跑的是**原包真身**:`require('mineflayer-pathfinder').pathfinder`
+  装到一个桩 bot 上,`setGoal` / `stop` / `resetPath` 都是包里那份闭包。
+  (上一版是按行号复刻的,结论相同 —— 这次是把复刻换成了真身。)
+- 上线前后三小时那张对比表来自另一个会话,**我没有独立复核**。
+  但"`setMovements` 会吃掉闩"这条机制我复核了:`index.js:149-151` → `resetPath` →
+  `:139`,中间没有任何提前返回;并且上面③实跑过。
 
 版本:`mineflayer-collectblock 1.6.0`、`mineflayer-pathfinder 2.4.5`、`mineflayer 4.39.0`。
 行号都是这几个版本的实际安装包,逐行核过。
