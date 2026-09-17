@@ -115,3 +115,7 @@ bot.pathfinder.tickTimeout  = 40     // ms,每 tick 花在思考上的时间(上
 
 社区里有项目把 `pathfinder.stop()` 写进"中断三件套",照抄会给自己引入一个本来没有的 bug。
 我们的动作超时用的是 `setGoal(null) + stopDigging()`,**正好躲开了这个坑** —— 属于运气,不是设计。
+
+⚠️ **上游已经修了,但没发版**:master 的 `84c3bd29a7`(2026-09-14)给 `stop()` 加了守卫
+`if (!stateGoal && path.length === 0) return`。npm 上最新仍是 2.4.5(2023-09-04)。
+详见 [11 · 上游修了但你装不到](11-goal-y-trap.md)。

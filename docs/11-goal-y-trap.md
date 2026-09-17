@@ -107,7 +107,51 @@ function noPathListener (results) {
 **"路径长度为 0"这个分支排在最前面,而且不带错误。**
 所以 `await bot.pathfinder.goto(goal)` 正常返回,完全可以意味着**一格都没动**。
 
-上游 master 有一条未发布的修复承认这是 bug,但 npm 上最新仍是 **2.4.5(2023-09-04)**,没有版本可升。
+### 上游修了 —— 但你装不到
+
+master 上的提交 **`84c3bd29a7`(2026-09-14)** 正是修这个的:
+
+> `fix: goto rejects an unreachable goal instead of resolving, and stop() no longer latches while idle (#375)`
+>
+> *A\* reconstructs its best node on failure, and when the best node is the start that path is empty,
+> so goto's li…*
+
+修完之后的 `goto.js`(注意空路径分支挪到了**最后**,而且要求 `status === 'success'`):
+
+```js
+// A search that fails or is still slicing reconstructs its best node, which is the start node
+// and so an empty path. Only a 'success' with nothing to walk means the goal is already met.
+if (results.status === 'noPath') {
+  cleanup(error('NoPath', 'No path to the goal!'))
+} else if (results.status === 'timeout') {
+  cleanup(error('Timeout', 'Took to long to decide path to goal!'))
+} else if (results.status === 'success' && results.path.length === 0) {
+  cleanup()
+}
+```
+
+**但 npm 上装不到。** `mineflayer-pathfinder` 最后一次发版是 **2.4.5 / 2023-09-04**,
+`dist-tags` 里只有 `latest`,没有 `next` 或 `beta`。
+master 很活跃(8 个 open PR、三天前还在提交),**但三年没发过版**。
+
+> **"我们已经是最新版"和"我们有最新的修复"是两回事。**
+> 查 npm 只能回答前者。踩到坑之后要去 master 上搜一遍 —— 修复可能早就在那儿躺着了。
+
+同一个提交还修掉了另一个我们记在 [06](06-error-dictionary.md) 里的坑(`stop()` 空闲时留闩):
+
+```js
+bot.pathfinder.stop = () => {
+  // Nothing is running, so there is nothing to stop; the flag would otherwise survive until the
+  // next goal and stop that one instead.
+  if (!stateGoal && path.length === 0) return      // ← 新增的守卫
+  stopPathing = true
+}
+```
+
+**我们不打算装 master。** 两个 bug 我们都已经在自己代码里绕开了
+(走路目标全换成 `GoalNearXZ`、从不调 `pathfinder.stop()`、14 处自己量位移),
+而把一个核心依赖换成未发布的 git 版本、装在孩子们正在玩的服务器上,换不来对应的收益。
+**记在这里是为了将来它真发版时知道该看什么。**
 
 > **不要把 `goto` 的 resolve 当成"到了"。一律自己量位移。**
 
