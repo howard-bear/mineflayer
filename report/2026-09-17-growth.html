@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root{color-scheme:light dark}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0}
+  img{max-width:100%}
+  [hidden]{display:none!important}
+</style>
+<title>小麦的第一间房子</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=Noto+Sans+SC:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ink:#1b1f1c; --ink-2:#4a5148; --ink-3:#7c857a;
+  --paper:#f4f1e8; --paper-2:#eae5d8; --line:#d6d0be;
+  --dirt:#7a5c3e; --oak:#b58444; --cherry:#cf7d9a; --leaf:#5f8b3e; --night:#2f3a55;
+  --panel:#fffdf7; --link:#8a5a2b;
+  --shadow:0 1px 2px rgba(27,31,28,.06),0 8px 24px -12px rgba(27,31,28,.18);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ink:#ece8dc; --ink-2:#a8b0a4; --ink-3:#77807a;
+  --paper:#15181a; --paper-2:#1d2124; --line:#2f3539;
+  --dirt:#a67a51; --oak:#d6a057; --cherry:#e0a0b8; --leaf:#8cc25f; --night:#8fa6d8;
+  --panel:#1b1f22; --link:#d0a26a;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+}}
+:root[data-theme="dark"]{
+  --ink:#ece8dc; --ink-2:#a8b0a4; --ink-3:#77807a;
+  --paper:#15181a; --paper-2:#1d2124; --line:#2f3539;
+  --dirt:#a67a51; --oak:#d6a057; --cherry:#e0a0b8; --leaf:#8cc25f; --night:#8fa6d8;
+  --panel:#1b1f22; --link:#d0a26a;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);
+  font-family:"Noto Sans SC",system-ui,-apple-system,sans-serif;font-weight:400;line-height:1.75;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding-inline:20px;padding-block:0 72px}
+h1,h2,h3{font-family:"Noto Serif SC",Georgia,serif;text-wrap:balance;margin:0}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
+a{color:var(--link);text-decoration-thickness:1px;text-underline-offset:2px}
+a:focus-visible{outline:2px solid var(--cherry);outline-offset:2px;border-radius:2px}
+.src{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3);
+  text-decoration:none;border-bottom:1px dotted var(--ink-3);white-space:nowrap}
+.src:hover{color:var(--link);border-bottom-color:var(--link)}
+
+/* ── 开篇 ── */
+.hero{padding-block:56px 40px;border-bottom:1px solid var(--line)}
+.hero h1{font-size:clamp(34px,7vw,58px);font-weight:900;line-height:1.14;letter-spacing:-.01em}
+.hero h1 em{font-style:normal;color:var(--cherry)}
+.lede{font-size:clamp(15px,2.1vw,17.5px);color:var(--ink-2);max-width:36em;margin:18px 0 0;font-weight:300}
+.lede b{font-weight:500;color:var(--ink)}
+
+/* ── 房子平面 ── */
+.house{display:grid;grid-template-columns:auto 1fr;gap:30px;align-items:start;
+  margin-top:40px;padding:26px;background:var(--panel);border:1px solid var(--line);
+  border-radius:3px;box-shadow:var(--shadow)}
+@media(max-width:640px){.house{grid-template-columns:1fr;gap:22px}}
+.planwrap{flex:none}
+.plan{display:grid;grid-template-columns:repeat(4,38px);grid-template-rows:repeat(4,38px);gap:3px}
+@media(max-width:400px){.plan{grid-template-columns:repeat(4,33px);grid-template-rows:repeat(4,33px)}}
+.c{border-radius:2px}
+.c.wall{background:var(--dirt);box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+.c.in{background:var(--paper-2);border:1px dashed var(--line)}
+.c.door{background:transparent;border:2px dashed var(--cherry)}
+.c.obj{background:var(--oak);box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+.compass{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);
+  text-align:center;margin-top:7px;letter-spacing:.1em}
+.northmark{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);
+  text-align:center;margin-bottom:7px;letter-spacing:.1em}
+.houseinfo h2{font-size:20px;font-weight:700;margin-bottom:6px}
+.houseinfo p{margin:0 0 14px;color:var(--ink-2);font-size:14.5px;font-weight:300}
+.spec{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;
+  font-family:"IBM Plex Mono",monospace;border-top:1px solid var(--line);padding-top:14px}
+.spec dt{color:var(--ink-3)}
+.spec dd{margin:0;color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:16px;font-size:11.5px;color:var(--ink-3);
+  font-family:"IBM Plex Mono",monospace}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:2px;flex:none}
+.caveat{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-3);font-weight:300;line-height:1.7}
+
+/* ── 数字带 ── */
+.band{display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);margin-top:44px;border-radius:3px;overflow:hidden}
+.stat{background:var(--panel);padding:18px 16px}
+.stat .n{font-family:"IBM Plex Mono",monospace;font-size:clamp(21px,3.4vw,27px);font-weight:600;
+  line-height:1.1;letter-spacing:-.02em;display:block}
+.stat .u{font-size:11.5px;color:var(--ink-3);margin-top:5px;display:block;line-height:1.5}
+.stat.acc .n{color:var(--cherry)}
+.bandnote{margin-top:12px;font-size:12.5px;color:var(--ink-3);font-weight:300;line-height:1.7}
+
+/* ── 通用小节 ── */
+section{margin-top:56px}
+h2.sec{font-size:24px;font-weight:900;letter-spacing:-.01em}
+.sub{color:var(--ink-2);font-size:14.5px;font-weight:300;margin:8px 0 0;max-width:44em}
+
+/* ── 时间线 ── */
+.tl{margin-top:26px;border-left:2px solid var(--line)}
+.ev{position:relative;padding:0 0 26px 26px}
+.ev::before{content:"";position:absolute;left:-6px;top:7px;width:10px;height:10px;
+  background:var(--dirt);border:2px solid var(--paper);border-radius:1px}
+.ev.big::before{background:var(--cherry);width:14px;height:14px;left:-8px;top:5px}
+.ev .when{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);letter-spacing:.06em}
+.ev h3{font-size:16.5px;font-weight:700;margin:2px 0 4px}
+.ev.big h3{font-size:19px;color:var(--cherry)}
+.ev p{margin:0;color:var(--ink-2);font-size:14px;font-weight:300}
+.ev .delta{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--leaf);
+  margin-top:6px;display:block;line-height:1.6}
+.ev .cost{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--cherry);
+  margin-top:3px;display:block;line-height:1.6}
+.ev .refs{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px}
+
+/* ── 条形 ── */
+.bars{margin-top:24px;display:grid;gap:22px}
+.grp h3{font-size:13px;font-family:"IBM Plex Mono",monospace;font-weight:500;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px}
+.row{display:grid;grid-template-columns:104px 1fr 58px;gap:12px;align-items:center;
+  font-size:13px;padding:3px 0}
+@media(max-width:480px){.row{grid-template-columns:86px 1fr 46px;gap:8px;font-size:12px}}
+.row .lbl{color:var(--ink-2)}
+.row .val{font-family:"IBM Plex Mono",monospace;text-align:right;color:var(--ink);font-weight:500}
+.track{height:9px;background:var(--paper-2);border-radius:2px;overflow:hidden}
+.fill{height:100%;border-radius:2px}
+.grpnote{font-size:12.5px;color:var(--ink-3);font-weight:300;margin-top:8px}
+
+/* ── 还做不到 ── */
+.blocked{margin-top:26px;display:grid;gap:14px}
+.bl{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--night);
+  border-radius:0 3px 3px 0;padding:16px 18px}
+.bl.mine{border-left-color:var(--cherry)}
+.bl h3{font-size:15.5px;font-weight:700;margin-bottom:5px}
+.bl p{margin:0;color:var(--ink-2);font-size:14px;font-weight:300}
+.bl p + p{margin-top:8px}
+.bl .why{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ink-3);
+  margin-top:9px;display:block;line-height:1.7}
+
+footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-3);line-height:1.9;font-weight:300}
+footer .srcs{display:grid;grid-template-columns:auto 1fr;gap:2px 14px;
+  font-family:"IBM Plex Mono",monospace;font-size:11.5px;margin-bottom:14px}
+footer .srcs dt{color:var(--ink-3)}
+footer .srcs dd{margin:0;color:var(--ink-2)}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">羊羊服务器 · AI 玩家 XiaoMai · 截至 2026-09-17</p>
+    <h1>它自己盖了<em>一间房子</em><br>然后死了 1295 次</h1>
+    <p class="lede">小麦是一个<b>完全由 AI 操作、以真人身份登录</b>的 Minecraft 玩家。
+    盖房子这个能力是我们写的 —— 连"手能不能往上叠方块"都先用探针验过。
+    <b>模型决定的是三样:用什么材料、门朝哪边、盖多大。</b>
+    下面这张图按扫描到的地面层逐格画。</p>
+
+    <div class="house">
+      <div class="planwrap">
+        <div class="northmark">北 ↑</div>
+        <div class="plan" role="img" aria-label="小麦房子地面层的平面图:4×4 泥土墙,南墙留了一个门口,屋里有一格是工作台和箱子">
+          <div class="c wall"></div><div class="c wall"></div><div class="c wall"></div><div class="c wall"></div>
+          <div class="c wall"></div><div class="c in"></div><div class="c in"></div><div class="c wall"></div>
+          <div class="c wall"></div><div class="c in"></div><div class="c obj"></div><div class="c wall"></div>
+          <div class="c wall"></div><div class="c door"></div><div class="c wall"></div><div class="c wall"></div>
+        </div>
+        <div class="compass">南 ↓</div>
+      </div>
+      <div class="houseinfo">
+        <h2>第一间房子</h2>
+        <p>4×4、墙高两格、南墙留了一个门口。工作台和箱子也是它自己做、自己摆的。
+        材料是泥土 —— 它背包里最多的就是泥土。</p>
+        <dl class="spec">
+          <dt>地基</dt><dd>Y=63,平原</dd>
+          <dt>建成</dt><dd>2026-09-17 凌晨 04:26</dd>
+          <dt>谁决定的</dt><dd>材料 / 门朝向 / 边长 → 模型(house.json 记为 byModel)</dd>
+          <dt>几何</dt><dd>代码</dd>
+          <dt>屋顶</dt><dd>没有</dd>
+        </dl>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--dirt)"></i>泥土墙</span>
+          <span><i class="sw" style="background:var(--oak)"></i>工作台 + 箱子</span>
+          <span><i class="sw" style="border:2px dashed var(--cherry);background:transparent"></i>门口</span>
+          <span><i class="sw" style="background:var(--paper-2);border:1px dashed var(--line)"></i>屋里</span>
+        </div>
+        <p class="caveat">两处要说明:工作台和箱子挤在同一格里画,实际是两格;
+        墙是泥土,而泥土会长草 —— 今天再扫一遍,墙顶读出来会是草方块,不是泥土
+        <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/02-field-pitfalls.md">docs/02</a>。</p>
+      </div>
+    </div>
+
+    <div class="band">
+      <div class="stat"><span class="n">41.6</span><span class="u">小时运行时长</span></div>
+      <div class="stat"><span class="n">138.3</span><span class="u">公里,走出来的</span></div>
+      <div class="stat acc"><span class="n">1,295</span><span class="u">次死亡<br>平均 31 次/小时</span></div>
+      <div class="stat"><span class="n">39,230</span><span class="u">次跳跃</span></div>
+      <div class="stat"><span class="n">1,356</span><span class="u">块木头存进箱子</span></div>
+    </div>
+    <p class="bandnote">这些数来自服务器自己的玩家统计文件,不是机器人自己报的数。
+    同一件事我们试过另外三种数法,分别只数到 <b>92% / 24% / 约 0%</b> ——
+    这是这个项目最贵的一课
+    <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/10-counting-deaths.md">docs/10</a>。</p>
+  </header>
+
+  <section>
+    <h2 class="sec">改了什么,量到什么</h2>
+    <p class="sub">绿字是改完之后量到的变化。有的改动同时让别的东西变坏,那一行标成粉色 ——
+    这个仓库最贵的一课就是"只看单项指标会骗自己",所以代价和收益写在一起。</p>
+
+    <div class="tl">
+      <div class="ev">
+        <span class="when">09-15</span>
+        <h3>第一次站起来</h3>
+        <p>连上服务器、过了登录插件、能走能跳。当时它什么都不会,只是站在那里。</p>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-15 晚</span>
+        <h3>有了脑子</h3>
+        <p>接上跑在家里局域网的小模型。每隔几秒看一眼处境,自己从菜单里挑一件事做。</p>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-16</span>
+        <h3>让它慢一点,它反而做得更多</h3>
+        <p>模型跑在同一台机器上,而那台机器还要给服务器里的小朋友回话。
+        两边抢 GPU,机器人就卡在排队上。把它问模型的最小间隔从 0.3 秒<b>放慢</b>到 2.5 秒之后,
+        它反而做成了更多事。</p>
+        <span class="delta">同窗口决策 23 次 → 45 次</span>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/03-local-small-model.md">docs/03</a>
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/13-magic-numbers.md">docs/13</a>
+        </div>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-16</span>
+        <h3>学会砍树,也学会了不拆别人的房子</h3>
+        <p>它一开始把小朋友用原木盖的墙当成树砍。加了两道判断:上面得有树叶、周围三格不能有人造方块。</p>
+        <span class="delta">拆别人房子 → 0 次</span>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/04-guardrails.md">docs/04</a>
+        </div>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-16</span>
+        <h3>自己做工具、自己安家</h3>
+        <p>原木 → 木板 → 工作台 → 木棍 → 木剑。工作台和箱子都是自己做出来、自己摆下去的。</p>
+        <span class="delta">合成 1,039 次</span>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-16</span>
+        <h3>不再往骷髅箭上撞</h3>
+        <p>它原来看见远处的弓箭手就直冲过去,一路挨射。改成先在中间放一块方块挡箭,再拉开距离。</p>
+        <span class="delta">十格外的自杀式冲锋 1,174 次 → 0 次</span>
+        <span class="cost">代价:同一次改动把"造装备"排进了硬规则里"吃饭"的前面,
+        而硬规则只有一个位置 —— 于是它会连着做木板做到饿死。修好一项,总数变差。</span>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/02-field-pitfalls.md">docs/02</a>
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/17-guardrails-disarming-each-other.md">docs/17</a>
+        </div>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-17 凌晨</span>
+        <h3>发现它砍不动树,不是因为没有树</h3>
+        <p>背包 36 格全被泥土、腐肉、树苗塞满,而砍树的插件在动手之前就抛错 —— 每一次都必然失败。</p>
+        <span class="delta">砍树成功率 14%(4.5 小时窗口)→ 一个 21 分钟窗口里最高 73%</span>
+        <span class="cost">后来稳定在 20~30%。不是坏了 —— 73% 是一个 21 分钟窗口量出来的峰值,
+        两个数字的窗口差 13 倍,不该当成同一件事比。</span>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/01-inventory-full-blocks-everything.md">docs/01</a>
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/16-bursty-sampling.md">docs/16</a>
+        </div>
+      </div>
+
+      <div class="ev big">
+        <span class="when">09-17 04:26</span>
+        <h3>盖出了第一间房子</h3>
+        <p>模型决定了材料、门朝哪边、盖多大;代码负责算每块砖放在哪一格。
+        在这之前,我们先用一个不带模型的探针证明了"它的手能往上叠方块"——
+        花十分钟证明手能动,再花几百行谈功能。</p>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/04-guardrails.md">docs/04</a>
+        </div>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-17 上午</span>
+        <h3>我们以为治好了家门口的死亡循环 —— 后来发现没有</h3>
+        <p>它死后会被插件自动送回家,而僵尸就蹲在那儿。我们加了两道护栏,
+        一个短窗口里死亡降到每小时 7.4 次,看着像修好了。</p>
+        <span class="cost">换更大的窗口复测:爆发还在,<b>59% 的死亡仍然发生在家门口</b>,
+        其中 19 次挤在同一分钟里。两道护栏都按设计触发了,而死亡没停 ——
+        真正的开关在服务端配置(死后传送回家),客户端的规则管不到服务端的决定。</span>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/10-counting-deaths.md">docs/10</a>
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/16-bursty-sampling.md">docs/16</a>
+        </div>
+      </div>
+
+      <div class="ev big">
+        <span class="when">09-17 07:26</span>
+        <h3>第一次睡着</h3>
+        <p>天黑了、附近有床,它没问模型就直接去睡了 —— 这一条写成了硬规则。
+        床不是它做的,是村子里现成的一张(查过服务器的方块记录:这个世界上没有任何玩家放过床)。
+        它睡下、重生点被服务器改写、七十秒后天亮 —— <b>整个夜晚被跳过了</b>。</p>
+        <span class="cost">顺带把重生点从它天天死的那个家门口挪走了。
+        这可能是好事,也可能不是 —— 新落点周围什么样,我们还不知道。</span>
+      </div>
+
+      <div class="ev">
+        <span class="when">09-17</span>
+        <h3>然后它没事可做了</h3>
+        <p>转化率掉回 20~30%,而什么都没坏 —— 它把 16 个动作能做的事全做完了。
+        剩下的每一条路都要先会挖矿。一个自主 agent 需要一个"下一个目标"的来源,
+        而我们没给它。</p>
+        <div class="refs">
+          <a class="src" href="https://github.com/howard-bear/mineflayer/blob/main/docs/15-menu-exhausted.md">docs/15</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">这 41.6 小时里,它做了什么</h2>
+    <p class="sub">来自服务器的玩家统计文件(读数前先 save-all)。</p>
+
+    <div class="bars">
+      <div class="grp">
+        <h3>挖掉的方块 · 共 3,304</h3>
+        <div class="row"><span class="lbl">橡木</span><div class="track"><div class="fill" style="width:100%;background:var(--oak)"></div></div><span class="val">743</span></div>
+        <div class="row"><span class="lbl">橡树叶</span><div class="track"><div class="fill" style="width:81%;background:var(--leaf)"></div></div><span class="val">605</span></div>
+        <div class="row"><span class="lbl">云杉树叶</span><div class="track"><div class="fill" style="width:61%;background:var(--leaf)"></div></div><span class="val">451</span></div>
+        <div class="row"><span class="lbl">樱花木</span><div class="track"><div class="fill" style="width:55%;background:var(--cherry)"></div></div><span class="val">405</span></div>
+        <div class="row"><span class="lbl">云杉木</span><div class="track"><div class="fill" style="width:48%;background:var(--oak)"></div></div><span class="val">353</span></div>
+        <div class="row"><span class="lbl">草方块</span><div class="track"><div class="fill" style="width:18%;background:var(--dirt)"></div></div><span class="val">132</span></div>
+        <p class="grpnote">只列了前六项,合计 2,689 —— 剩下的 615 块散在几十种方块里。
+        注意"草方块 132":那不是它想挖,是寻路插件替它挖掉了挡路的东西。</p>
+      </div>
+
+      <div class="grp">
+        <h3>打赢过的 · 共 670</h3>
+        <div class="row"><span class="lbl">僵尸</span><div class="track"><div class="fill" style="width:100%;background:var(--night)"></div></div><span class="val">443</span></div>
+        <div class="row"><span class="lbl">溺尸</span><div class="track"><div class="fill" style="width:21%;background:var(--night)"></div></div><span class="val">94</span></div>
+        <div class="row"><span class="lbl">蜘蛛</span><div class="track"><div class="fill" style="width:14%;background:var(--night)"></div></div><span class="val">63</span></div>
+        <div class="row"><span class="lbl">苦力怕</span><div class="track"><div class="fill" style="width:4%;background:var(--night)"></div></div><span class="val">16</span></div>
+      </div>
+
+      <div class="grp">
+        <h3>用坏的装备 · 木剑 82 把</h3>
+        <div class="row"><span class="lbl">木剑用坏</span><div class="track"><div class="fill" style="width:100%;background:var(--cherry)"></div></div><span class="val">82</span></div>
+        <div class="row"><span class="lbl">木剑挥出</span><div class="track"><div class="fill" style="width:100%;background:var(--oak)"></div></div><span class="val">3,727</span></div>
+        <div class="row"><span class="lbl">石剑做出</span><div class="track"><div class="fill" style="width:0.5%;background:var(--ink-3)"></div></div><span class="val">0</span></div>
+        <p class="grpnote">木剑耐久 59,砍 443 只僵尸要磨掉 82 把。它做了 75 把,供不上碎的速度 ——
+        统计里"手无寸铁"出现过 <b>537 次</b>。石剑耐久是木剑的两倍多,而它一把都做不出来:石剑要圆石,圆石要挖矿。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">它还做不到什么</h2>
+
+    <div class="blocked">
+      <div class="bl mine">
+        <h3>动作清单里没有"挖矿"</h3>
+        <p>它会砍树,但没有一个动作让它<b>有目的地</b>去采石头和矿。
+        所以石剑、铁装备、熔炉,全都做不出来 —— 这也是它一直在用木剑的原因。</p>
+        <p>要说清楚的是:它身上偶尔会有石头,成就里甚至有"挖到钻石"和"炼出铁"。
+        那是寻路插件替它挖掉挡路方块的副作用,不是它会挖矿。这两个成就我们没查清来源,
+        所以不当成绩算,但也不藏着。</p>
+        <span class="why">给机器人加挖矿动作的时候才发现:放方块有很严的闸,挖方块一道都没有 → docs/14</span>
+      </div>
+
+      <div class="bl">
+        <h3>它最常见的死法是饿死</h3>
+        <p>而且是我们自己造成的:修弓箭手那次改动,把"造装备"排到了"吃饭"前面,
+        两者抢同一个位置。一道为保命加的闸,在 9 秒内把防饿死那条规则关掉了 3 分钟 ——
+        两个部件都没写错,是记账把它们连在了一起。</p>
+        <span class="why">"被规则挡住"和"动作失败了"记在了同一个计数器上 → docs/17</span>
+      </div>
+
+      <div class="bl">
+        <h3>不会种树</h3>
+        <p>它把家附近的树砍光了,而背包里躺着几十个树苗。动作清单里没有"种"这个选项。</p>
+        <span class="why">一个只会消耗、不会再生的玩家,产出必然随时间归零</span>
+      </div>
+
+      <div class="bl">
+        <h3>目标在好几个小时前就完成了</h3>
+        <p>它的大目标是"把 64 块木头存进箱子"。它存了 1,356 块。
+        没有任何机制告诉它这件事已经做完,于是它继续在一百多格的范围里来回游荡。</p>
+        <span class="why">它的规划师自己写过一句:「已存 700 块,目标已完成,需确认存入」→ docs/15</span>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <dl class="srcs">
+      <dt>主统计</dt><dd>服务器玩家统计文件 world/stats/&lt;uuid&gt;.json,读数前 save-all</dd>
+      <dt>房子规格</dt><dd>对建筑地面层的逐格方块扫描</dd>
+      <dt>时间线的变化量</dt><dd>部署前后的日志对照,窗口见对应的 docs</dd>
+      <dt>地点 / 记忆</dt><dd>机器人自己的地点记忆(places),不是服务器权威数据</dd>
+    </dl>
+    截至 2026-09-17,运行 41.6 小时 · 受到伤害 367,084 点 · 会做 16 件事<br>
+    代码与实测笔记:<a href="https://github.com/howard-bear/mineflayer">github.com/howard-bear/mineflayer</a>
+  </footer>
+
+</div>
+</body>
+</html>
