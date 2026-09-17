@@ -30,6 +30,29 @@ if ! flock -n 9; then
 fi
 
 CUR_MD5=$(md5sum bot.real.js 2>/dev/null | cut -d' ' -f1)
+# ──────────────────────────────────────────────────────────────────
+# 🔴 不传 EXPECT_MD5 = 默认拒绝(2026-09-17 09:5x 收紧)
+#
+# 第一版把 EXPECT_MD5 做成【可选】,平级会话一句话点破了问题:
+#   **flock 只挡"同时",挡不住"先后" —— 而静默的先后覆盖才是致命的那个。**
+# 可选的检查等于没检查:未来任何一次忘了传,就退回到"谁最后跑谁赢、不留痕迹"。
+# 所以把安全的那条路改成【默认】:不传就拒绝,要盲部署必须显式说出来。
+# 盲部署也照样记进审计日志,事后能查是谁绕过的。
+# ──────────────────────────────────────────────────────────────────
+if [ -z "${EXPECT_MD5:-}" ] && [ "${BLIND_DEPLOY:-0}" != "1" ]; then
+  echo "❌ 拒绝部署:没告诉我你读代码时的 md5。"
+  echo "   现在服务器上的是: $CUR_MD5"
+  echo "   👉 正确做法:EXPECT_MD5=$CUR_MD5 bash ~/deploy_safe.sh"
+  echo "      (前提是这个 md5 和你拉下来改的那份一致;不一致说明别人部署过,"
+  echo "       要重新拉、重新打补丁,不要覆盖。)"
+  echo "   真要盲部署(明知可能抹掉别人的改动):BLIND_DEPLOY=1 bash ~/deploy_safe.sh"
+  exit 1
+fi
+if [ -z "${EXPECT_MD5:-}" ]; then
+  echo "⚠️ 盲部署(BLIND_DEPLOY=1):跳过并发检查,可能抹掉别人的改动。已记进审计日志。"
+  printf '%s  🔴BLIND  user=%s  from=%s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$(whoami)" "${CUR_MD5:0:12}" \
+    >> /home/howard/deploy-audit.log
+fi
 if [ -n "${EXPECT_MD5:-}" ] && [ "$EXPECT_MD5" != "$CUR_MD5" ]; then
   echo "❌ 拒绝部署:现在的 bot.real.js 不是你读过的那一份。"
   echo "   你以为是: $EXPECT_MD5"
@@ -42,13 +65,22 @@ fi
 
 # 部署审计:谁、什么时候、从哪个 md5 换到哪个 md5。撞车了要能查。
 NEW_MD5=$(md5sum _new_bot.js 2>/dev/null | cut -d' ' -f1)
+# ⚠️ tty 的输出可能是 "not a tty"(带空格),会把后面的字段挤到下一行 —— 去掉空格
+DEPLOY_TTY=$(tty 2>/dev/null | tr -d ' ' || echo '-')
 printf '%s  user=%s  tty=%s  from=%s  to=%s\n' \
-  "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$(whoami)" "$(tty 2>/dev/null || echo '-')" \
+  "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$(whoami)" "${DEPLOY_TTY:--}" \
   "${CUR_MD5:0:12}" "${NEW_MD5:0:12}" >> /home/howard/deploy-audit.log
 echo "🔒 已取得部署锁;当前 ${CUR_MD5:0:12} → 将换成 ${NEW_MD5:0:12}(记录在 ~/deploy-audit.log)"
 
 echo "=== 1) 语法检查(不过就不放它出来）==="
-node --check _new_bot.js || { echo "   ❌ 语法错,中止,小麦继续停着"; exit 1; }
+# 语法关必须用【服务真正会用的那个 node】,不是 PATH 里那个。
+# 2026-09-17:mcbot 被 systemd drop-in 切到了 Node 22,而 /usr/bin/node 仍是 Debian 的 20。
+# 用 20 去 --check 一份将来可能含 22 语法的文件,这道关会【静默放过】——
+# 那正是这个脚本存在的意义的反面。所以从 systemd 单元里抠出真正的解释器,抠不到才退回 PATH。
+NODE_BIN="$(systemctl show -p ExecStart --value mcbot 2>/dev/null | sed -n 's/.*path=\([^ ]*\).*/\1/p' | head -1)"
+[ -x "$NODE_BIN" ] || NODE_BIN="$(command -v node)"
+echo "   语法关用的解释器:$NODE_BIN ($("$NODE_BIN" -v 2>/dev/null))"
+"$NODE_BIN" --check _new_bot.js || { echo "   ❌ 语法错,中止,小麦继续停着"; exit 1; }
 echo "   ✅ OK"
 echo "   护栏函数: isNaturalTree=$(grep -c 'function isNaturalTree' _new_bot.js) hasLeavesAbove=$(grep -c 'function hasLeavesAbove' _new_bot.js) manmadeNear=$(grep -c 'function manmadeNear' _new_bot.js)"
 echo "   砍树时真的用上了护栏: $(grep -c 'function isNaturalTree' _new_bot.js) 处（必须 ≥1）"

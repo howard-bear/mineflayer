@@ -45,6 +45,33 @@ EXPECT_MD5=<你读代码时的那个 md5> bash ~/deploy_safe.sh
 **3. `~/deploy-audit.log`** —— 每次追加「时间 / 用户 / from→to 的 md5」。
 撞车之后能查出来到底发生了什么。
 
+## 附:语法关用错解释器,等于没有语法关
+
+部署脚本的第一道关是 `node --check`。但它写的是**裸命令**:
+
+```bash
+node --check _new_bot.js      # ← 走 PATH,拿到的是系统默认那个 node
+```
+
+而这个服务实际是用另一个 Node 跑的(系统默认 v20,服务跑 v22)。
+**用旧解释器去检一份实际跑在新解释器上的文件,新语法会被静默放过** ——
+那正好是这道关存在意义的反面。
+
+改成从 systemd 单元里抠出真正的解释器,抠不到才退回 PATH:
+
+```bash
+NODE_BIN="$(systemctl show -p ExecStart --value mcbot | sed -n 's/.*path=\([^ ]*\).*/\1/p' | head -1)"
+[ -x "$NODE_BIN" ] || NODE_BIN="$(command -v node)"
+echo "   语法关用的解释器:$NODE_BIN ($("$NODE_BIN" -v))"
+"$NODE_BIN" --check _new_bot.js || exit 1
+```
+
+实测抽取结果:`/usr/local/bin/node22` → v22.23.2,而 PATH 里的是 v20.19.2。
+**以后谁再换 Node,这道关会自动跟着走,不用记得改。**
+
+> 更一般地:**任何"检查"都要确认它检的是不是生产里真正会跑的那个东西。**
+> 检查器和被检查对象用了不同的运行时,检查就是安慰剂。
+
 ## 给做同样事情的人的几条
 
 1. **只要有两个 agent 能碰同一个生产文件,就一定要有乐观并发检查。**
