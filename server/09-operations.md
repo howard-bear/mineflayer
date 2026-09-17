@@ -18,7 +18,7 @@
 
 ## 一、一天里它自己会做的四件事
 
-`systemctl list-timers` 的原文(2026-09-17 20:14 JST 那次,一字没改):
+`systemctl list-timers` 的原文(2026-09-17 20:14 JST 那次;为了在网页上不换行**只收窄了列间空格**,字一个没改):
 
 ```
 Thu 2026-09-17 20:14:12 JST       1s Thu 2026-09-17 20:13:12 JST      58s ago mc-status.timer           mc-status.service
@@ -36,7 +36,7 @@ Fri 2026-09-18 05:10:00 JST       8h Thu 2026-09-17 05:10:08 JST      15h ago mc
 | **04:00** | `mc-backup.timer` | 备份 | 上次 `04:00:01`,下次 `04:00:00` |
 | **05:00** | `mc-restart.timer` | 重启 Minecraft 服务端 | 上次 `05:00:01`,下次 `05:00:00` |
 | **05:10** | `mc-chunky-resume.timer` | 续跑地形预生成(Chunky) | 上次 `05:10:08`,下次 `05:10:00` |
-| (00:00) | `dpkg-db-backup.timer` | **Debian 自带的**,备份的是系统包数据库,和 Minecraft 无关 | 名字和它的 service 都不带 `mc-` |
+| (00:00) | `dpkg-db-backup.timer` | **不是我们装的** —— 它备份的是系统包管理器的数据库,和 Minecraft 无关 | 名字和它的 service 都不带 `mc-`(这是本节唯一的判据;"它属于系统"是通用知识,不是素材里写的) |
 
 两个从原文里能直接读出来的细节,别忽略:
 
@@ -64,6 +64,10 @@ Fri 2026-09-18 05:10:00 JST       8h Thu 2026-09-17 05:10:08 JST      15h ago mc
 ---
 
 ## 二、备份:曾经连续三天,"有备份"是假的
+
+> **先说清出处**:这一节的事故**不在这次抓的素材里** —— 素材里只有 `mc-backup.timer` 那一行。
+> 事故经过来自 [`CHANGELOG.md`](CHANGELOG.md) 和交接记录,`tar` 退出码的含义是通用知识。
+> 我**没有看到脚本本身**,也没有那三天的原始日志(文末第 2、3 条)。
 
 ### 事故
 
@@ -114,7 +118,8 @@ Fri 2026-09-18 05:10:00 JST       8h Thu 2026-09-17 05:10:08 JST      15h ago mc
 `mc-restart.timer` 05:00 重启服务端。连带的现象:
 
 - **AI 玩家小麦(mineflayer 机器人)会刷一串连接错误(`ECONNREFUSED`)。**
-  这是服务端还没起来时它在重试,**不是 bug**,约 **47 秒**自己接上。
+  这是服务端还没起来时它在重试,**不是 bug**,约 **47 秒**自己接上
+  (这个 47 秒来自交接记录,本次素材里没有机器人日志 —— 文末第 5 条)。
   **不要在这个时候去重启机器人或改它的代码** —— 你会把一次正常的自愈当成故障去"修"。
 - **跨重启活不下来的东西,必须自己有一个 unit。** 这就是 `mc-chunky-resume.timer` 存在的原因:
   地形预生成是分批跑的,重启会打断它,所以 05:10 有一个专门的任务把它接回去。
@@ -149,7 +154,7 @@ sudo mv config.yml.new /opt/minecraft/plugins/X/config.yml
 
 # ✅ 原地覆写,inode 不变
 sudo cp /opt/minecraft/plugins/X/config.yml \
-        /opt/minecraft/plugins/X/config.yml.bak-20260917-2015   # 先备份(新建别的文件没事)
+        /opt/minecraft/plugins/X/config.yml.bak-<为了什么改>-20260917-2015  # 先备份(新建别的文件没事)
 sudo cp /tmp/config.yml.new /opt/minecraft/plugins/X/config.yml # cp 是截断写,不换 inode
 ```
 
@@ -175,9 +180,9 @@ sudo cp /tmp/config.yml.new /opt/minecraft/plugins/X/config.yml # cp 是截断�
 服务器上现成的两种写法(素材原文):
 
 ```
-castle1_mobs.txt.bak-hp1784729341                      ← /opt/minecraft 下抓到的
-resworld.yml.bak-paid-20260917-192730                   ← CHANGELOG.md 里的
-roles.json.bak-sleep-20260917-123914                    ← 同上
+castle1_mobs.txt.bak-hp1784729341            ← 素材「城堡对战」那一节里的(完整路径素材没给)
+resworld.yml.bak-paid-20260917-192730        ← CHANGELOG.md 里的
+roles.json.bak-sleep-20260917-123914         ← 同上
 ```
 
 约定是 **`<原名>.bak-<为了什么改>-<时间戳>`**。
@@ -193,6 +198,11 @@ roles.json.bak-sleep-20260917-123914                    ← 同上
 
 **不要升到 2.22.0+ —— 那之后放弃了 1.21.4 支持。** 这台服务端锁在 1.21.4(见
 [`06-platforms-and-login.md`](06-platforms-and-login.md)),所以插件的"最新版"经常不是"能用的版本"。
+
+> ⚠️ **`2.21.0` / `2.22.0` 这两个版本号不是这次抓到的** —— 本次素材里 `2.21` / `2.22` **零命中**,
+> 它们来自 [`CHANGELOG.md`](CHANGELOG.md) 的"更早的改动"表(那张表自己也标了「日期未逐条复核」)。
+> 动手之前先在服务器上看一眼实际装的是哪一版(文末第 10 条)。
+> 下面这张表里"哪些玩法搭在 EssentialsX 上"**是素材支持的**,只有版本号不是。
 
 **为什么这条比听起来更重**:EssentialsX 不是一个边角插件,孩子手上那本玩法书里
 大半条命令都是它的,而且好几套玩法是搭在它上面的:
@@ -216,13 +226,17 @@ roles.json.bak-sleep-20260917-123914                    ← 同上
 
 ## 六、后台任务会和玩家抢 CPU,而 TPS 不会告诉你
 
-素材里有两个数,放一起看才有意思:
+素材里有这么三条,放一起看才有意思:
 
 | 数字 | 出处 |
 |---|---|
-| `render-thread-count: 2` | `plugins/BlueMap/core.conf` |
-| 地图配置文件数 **55** | BlueMap 配置目录(≈ 52 个世界都上了网页地图) |
+| `render-thread-count: 2` | `plugins/BlueMap/core.conf`(素材原文) |
+| BlueMap **地图配置文件数 = 55** | 素材里只有这一个数字,**没说它数的是哪些文件** |
 | 05:10 还有一个地形预生成的续跑任务 | 第一节的定时器表 |
+
+(顺带把一个容易被当成结论的推算说清:3 个主世界 + 49 个资源世界 = **52**,和 **55** 差 3,
+**这个差我解释不了** —— 详见 [`08-map-and-events.md`](08-map-and-events.md)。
+本节只需要一个结论:网页地图上挂着**几十个**世界要渲染。)
 
 也就是说:**这台机器上有两个长期在后台啃 CPU 的活儿** —— 网页地图渲染,和地形预生成。
 它们都不是玩家触发的,失败或者跑太猛也都不会有人报告。
@@ -247,11 +261,11 @@ roles.json.bak-sleep-20260917-123914                    ← 同上
 | 孩子说"进不去",不在 05:00 附近 | 版本翻译那一层([`06`](06-platforms-and-login.md)):客户端自动升级了?基岩版端口填错了? | 别先怀疑服务端,它锁着版本没动 |
 | 孩子说"卡在加载地形中",**但 TPS 显示 20.0** | 后台占核:BlueMap `render-thread-count`、预生成任务 | **别拿 TPS 当证据说"不卡"** |
 | 想确认"有备份" | 目标位置最新文件的**时间戳**,加 `journalctl -u mc-backup` 的**退出码** | 别把"定时器触发了"当成"备份成功了" |
-| 机器人 05:00 附近刷 `ECONNREFUSED` | 什么都不用做,约 **47 秒**自愈 | 别在这时候重启机器人或改代码 |
+| 机器人 05:00 附近刷 `ECONNREFUSED` | 什么都不用做,约 **47 秒**自愈(秒数未复核) | 别在这时候重启机器人或改代码 |
 | 后台改的配置"过一会儿又没了" | 那个文件头上是不是写着"由后台页面自动生成" | 别再手改文件,去改生成它的那一侧 |
 | 某个服务突然写不进自己的配置 / 后台保存不生效 | 刚才是不是用 `sed -i` 或 `mv` 动过那个文件(inode 换了) | 先 `systemctl restart <那个服务>`;以后别用 `sed -i` |
-| `/home` `/pay` `/sell` 一起失灵 | EssentialsX 版本被升过没有(必须 **2.21.0**) | 别"顺手升到最新" |
-| 菜单里某个按钮**整个消失** | 同一格子多个 item 少写了 `priority` —— [`CHANGELOG.md`](CHANGELOG.md) 2026-09-17 用一次 20 分钟线上故障换来的 | 别先当成权限问题查 |
+| `/home` `/pay` `/sell` 一起失灵 | EssentialsX 版本被升过没有(应为 **2.21.0**,版本号出处见第五节) | 别"顺手升到最新" |
+| 菜单里某个按钮**整个消失** | 同一格子多个 item 少写了 `priority` —— [`CHANGELOG.md`](CHANGELOG.md) 2026-09-17 用一次**约 20 分钟**的线上故障换来的 | 别先当成权限问题查 |
 | 改完插件不确定线上跑的是哪一版 | [`CHANGELOG.md`](CHANGELOG.md):每条都带文件路径和回滚命令 | 别靠记忆 |
 
 ---
@@ -275,9 +289,10 @@ roles.json.bak-sleep-20260917-123914                    ← 同上
 ## ⚠️ 这篇里我没核实的
 
 1. **定时器清单很可能不完整。** 素材只给了 5 行(4 个 `mc-*` + `dpkg-db-backup`)。
-   一台 Debian 上正常还会有 `logrotate`、`apt-daily`、`systemd-tmpfiles` 这类系统定时器,
+   正常一台 Linux 上还会有 `logrotate`、`apt-daily`、`systemd-tmpfiles` 这类系统定时器,
    它们在素材里**零命中** —— 所以那份清单看着像是被过滤过的。
    "一天只有四件事"这句**只对 `mc-*` 成立**。
+   (顺带:本次素材里**没有**操作系统和发行版版本;`dpkg-db-backup` 这个名字只能说明它用 dpkg 系的包管理器。)
 2. **备份的内容、目的地、保留几份、跑多久、占多大,全都没有素材。**
    定时器那一行是唯一证据。"备份到 Google Drive / rclone"来自 [`CHANGELOG.md`](CHANGELOG.md) 和交接记录,
    这次抓取里 grep 不到 `rclone` / `Google` / `gdrive`。
@@ -295,9 +310,11 @@ roles.json.bak-sleep-20260917-123914                    ← 同上
    "它是 `OnUnitActiveSec` 那一类"是从两个样本推的,没看 unit 文件。
 9. **失败报警通道到底有没有、通向谁,我不知道。** 第二节那条教训因此**没有闭环** ——
    我能说"应该有人看见",但拿不出"现在谁在看"的证据。
-10. **EssentialsX `2.21.0` / `2.22.0` 这两个版本号,本次素材 grep 不到**(`2.21` / `2.22` 零命中),
-    来自交接记录和 [`CHANGELOG.md`](CHANGELOG.md)(那份自己也标了"未逐条复核")。
-    **以服务器上 `/plugins` 的实际输出为准。**
+10. **第五节的版本号全都不是这次抓的。** `2.21.0` / `2.22.0` 在本次素材里 grep 不到
+    (`2.21` / `2.22` 零命中),来自交接记录和 [`CHANGELOG.md`](CHANGELOG.md)(那份自己也标了"未逐条复核");
+    同一节里 "mineflayer 4.26.0 起要求 `node >= 22`、系统自带 20" 同样只有 `CHANGELOG.md` 一个出处
+    (素材里 `mineflayer` / `node` / `4.26` 零命中)。
+    **以服务器上 `/plugins` 和机器人那台的实际输出为准。**
 11. **`render-thread-count` 调到 6 = 吃掉 11/16 核**:`render-thread-count: 2` 是素材里的真值,
     但"6 核 / 11 核 / TPS 仍 20.0"来自 `CHANGELOG.md`,本次没有复测,
     也没有抓到这台机器的**总核数**。

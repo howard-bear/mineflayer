@@ -227,7 +227,8 @@ Java 版玩家什么都不用填。
 
 ### 从别的服回来时免登录:YangPortal 的通行证
 
-`YangPortal` 的配置里有这么几行(密钥字段已删,不进仓库):
+`YangPortal` 的配置里,**和登录有关的几行**(原文顺序,中间跳过了密钥和后端主机名 ——
+那两样不进公开仓库):
 
 ```yaml
 port: 25565
@@ -249,18 +250,22 @@ auto-login-on-return: true
 
 ### ⚠️ 同一个 IP 能同时进几个人
 
-`GriefPreventionData/config.yml` 里抓到:
+`GriefPreventionData/config.yml` 里抓到这两个值(在原文里**不相邻**,是我摘到一起的):
 
 ```
 MaxPlayersPerIpAddress: 3
 LoginLogoutNotificationsPerMinute: 5
 ```
 
+只有**上面那一行**是人数限制。下面那行管的是"每分钟最多播几条进出服提示",
+和能不能进来无关 —— 放在这里只是因为它是同一份配置里唯一另一条带 `Login` 的值。
+
 **这一条在"很多孩子从同一个出口 IP 进来"的场景下会咬人** ——
-第 4 个人会被挡在登录这一步,而报错看起来不像"人数限制"。
+第 4 个人会被挡住。**具体会看到什么报错,我没有样本**(所以别指望从报错文字里认出这是人数限制)。
 如果你的玩家是通过某个共享出口进来的,这个数字要么调大,要么把那个出口加白。
 
-**素材里没有任何"被这条限制踢掉"的实际记录**,我只是看到了这个值,并且知道它管的是登录。
+**再强调一次:素材里没有任何"有人被这条限制挡住"的记录。** 我只抓到了这个值,
+"它在这台服上实际怎么表现"没有任何证据。
 
 ### ⚠️ 离线 UUID 这条不要轻易碰
 
@@ -333,27 +338,55 @@ LoginLogoutNotificationsPerMinute: 5
 
 ## ⚠️ 这篇里我没核实的
 
-1. **插件版本号的出处不是这四份抓取文件。** `ViaVersion 5.11.0 / ViaBackwards 5.11.0 /
-   nLogin 2.0.18 / FreedomChat 1.7.2 / Geyser-Spigot / Floodgate / GrimAC` 这份清单来自
-   交给我的任务说明,我在 `raw-*.txt` 里 **grep 不到它们**(Geyser、Via、nLogin、FreedomChat、
-   Grim 这几个词在四份素材里零命中)。**版本号请以服务器上 `/plugins` 的实际输出为准。**
-   Geyser / Floodgate / GrimAC 三个连版本号都没有。
-2. **服务端 jar 的品牌和精确版本没抓到。** `version` 命令只回了
+1. **整份插件清单都不出自这四份抓取文件。** 在 `raw-*.txt` 里 grep
+   `Geyser` / `Via` / `nLogin` / `FreedomChat` / `Grim` 是**零命中**。各自的出处是:
+   - **nLogin** —— `CHANGELOG.md`(2026-07-19 那条),记着 `2.0.18`,**本次没复核**
+   - **FreedomChat** —— `CHANGELOG.md`,记着 `1.7.2`,**本次没复核**
+   - **Geyser / Floodgate** —— `CHANGELOG.md`,**没有版本号**,连是哪个发行版都不知道
+   - **GrimAC** —— `docs/09`(实测 `grep -i grim` 命中 28 行),**没有版本号**
+   - **ViaVersion / ViaBackwards** —— **哪儿都不是**,见下一条,**没有版本号**
+
+   **⚠️ 这一条是校对这份文档时抓到的最大问题:** 初稿在这里写了
+   `ViaVersion 5.11.0 / ViaBackwards 5.11.0` 两个具体版本号,而这两个数字
+   **在四份素材、`CHANGELOG.md`、`docs/` 里全都查不到** —— 属于凭空出现的数字,**已删除**。
+   一切版本号请以服务器上 `/plugins` 的实际输出为准。
+2. **"版本翻译层就是 Via" 本身是推断。** 现场证据只有一条:一台锁 1.21.4 的服务端接住了
+   26.x 的客户端,而且 `viaversion list` 这个命令有响应。
+   没抓到任何插件配置 —— [01 篇](01-what-players-see.md) 的口径也是"是我的推测,不是证据"。
+3. **服务端 jar 的品牌和精确版本没抓到。** `version` 命令只回了
    `Checking version, please wait...`,Paper / Folia 的探测那节是空的。
    1.21.4 只有两个旁证(老麦的 facts、`viaversion list` 的第一行),**没有服务端自己的输出**。
-3. **ViaBackwards 的方向没有样本。** 三个在线客户端全都 ≥ 1.21.4,比 1.21.4 老的客户端一个都没有。
-4. **机器人为什么被报成 `26.1-26.1.2`,我解释不了。** 它在代码里按 1.21.4 连。
-5. **「一传送就闪退」只有症状和处置,没有机制证据。** 没有抓包,没有崩溃日志原文。
-   "传送时重发区块数据把翻译层暴露了"是猜测。
-6. **`MaxPlayersPerIpAddress: 3` 是抓到的值,但没有"因此被踢"的实际记录。** 我没验证过
+   (第五、九节提到 Paper 的 `perform-username-validation`,那也是运维记录里的说法,
+   不算"服务端是 Paper"的证据。)
+4. **ViaBackwards 的方向没有样本。** 三个在线客户端全都是 `1.21.4` / `26.1-26.1.2` / `26.2`,
+   比 1.21.4 老的客户端一个都没有。
+   ⚠️ 顺带:我把 `26.x` 当成"比 1.21.4 新",是**按版本号大小推的** ——
+   素材里没有任何发布日期,所以初稿写的"比服务端新一整年"这种时间跨度**我删掉了**,它没有出处。
+5. **机器人为什么被报成 `26.1-26.1.2`,我解释不了。** 它在代码里按 1.21.4 连。
+6. **「一传送就闪退」只有症状和处置,没有机制证据。** 没有抓包,没有崩溃日志原文。
+   "传送时重发区块数据把翻译层暴露了"是猜测。而且**症状本身也来自运维记录**,不是这次抓到的。
+7. **`MaxPlayersPerIpAddress: 3` 是抓到的值,但没有"因此被踢"的实际记录。** 我没验证过
    它在共享出口 IP 的场景下实际是怎么表现的,也没确认 nLogin 那边是否另有一条同 IP 限制。
-7. **下面这几条来自运维记录 / `server/CHANGELOG.md`,不是本次从服务器上抓的**,那份记录自己也标了"未逐条复核":
-   - 开基岩版要关 Paper 的 `perform-username-validation` + 放宽 nLogin 名字正则
-   - FreedomChat 要设 `claim-secure-chat-enforced: true` 且必须完整重启
-   - 不要装回 LibreLogin(它和 Via / Floodgate 一起会**静默断连**)
-   - `online-mode` 翻回 `true` 会打散所有离线 UUID 上的数据
-   - Geyser 落后会导致基岩玩家连不上
-8. **YangPortal 的免登录通行证,我只读了配置,没有实测过这条链路现在是否可用。**
-9. **GrimAC 这一节没有任何配置或封禁数据支撑**,除了另一篇里那个"它没管这个机器人"的负结果。
-10. **玩家名按本仓库惯例做了脱敏**(`<PLAYER>` / `<OWNER>`);`XiaoMai` 是机器人本身,保留原名。
-    `viaversion list` 的版本号和人数原样未改。
+8. **"Java 版走默认端口 25565" 是推断。** 素材里**没有** `server.properties` 的 `server-port`
+   那一行;`port: 25565` 出现在 YangPortal 自己的配置里,那是那个插件的字段。
+   只有基岩版的 `19132` 是书里明写的。
+9. **出生点靠什么保护,我不知道。** 只有 `spawn-protection=0` 这一个事实。
+   初稿写的"改用 GriefPrevention 的管理员领地"**素材里没有任何证据支撑,已删** ——
+   [01 篇](01-what-players-see.md) 在它的「没核实」里也列了同一条。
+10. **`pvp=true` 为什么开着,没有证据。** 初稿写的"城堡对战那套玩法需要"是我的推断,**已删**。
+    素材里只有"开着 PvP"这个事实,和另一处城堡重建脚本的文件名,两者之间没有任何连线。
+11. **`/register` / `/login` 的参数格式没有实测。** 命令名来自运维记录,
+    "口令要打两遍"是按 nLogin 常见用法填的。
+12. **下面这几条来自运维记录 / `server/CHANGELOG.md`,不是本次从服务器上抓的**,那份记录自己也标了"未逐条复核":
+    - 开基岩版要关 Paper 的 `perform-username-validation` + 放宽 nLogin 名字正则
+    - FreedomChat 要设 `claim-secure-chat-enforced: true` 且必须完整重启
+    - 不要装回 LibreLogin(它和 Via / Floodgate 一起会**静默断连**)
+    - `online-mode` 翻回 `true` 会打散所有离线 UUID 上的数据
+    - Geyser 落后会导致基岩玩家连不上
+    - EssentialsX 固定 2.21.0(2.22.0+ 放弃 1.21.4 支持)
+13. **YangPortal 的免登录通行证,我只读了配置,没有实测过这条链路现在是否可用。**
+14. **GrimAC 这一节没有任何配置或封禁数据支撑**,除了 [`docs/09`](../docs/09-plugins-and-ports.md) 里
+    那个"它没管这个机器人"的负结果。
+15. **玩家名按本仓库惯例做了脱敏**(`<PLAYER>` / `<OWNER>`);`XiaoMai` 是机器人本身,保留原名。
+    `viaversion list` 那段我只对齐了列宽,**版本号和人数原样未改**。
+    YangPortal 配置里的 `secret` 和两条 `routes`(后端主机名)**故意没抄进来**。

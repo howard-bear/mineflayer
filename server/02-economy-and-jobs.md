@@ -133,7 +133,8 @@ Jobs 允许一个人同时兼多个职业(这条是常识,素材里没验),所�
 - 定价表:`/opt/minecraft/plugins/Essentials/worth.yml`
 - 改价的命令:配置注释写着 `You can control the values of items that are sold to the server by using the /setworth command.`
 - 还有一个 `sell-multipliers:` 段(按权限给不同倍率),但**内容没抓到**
-- 商店菜单里的「**出售手中**」按钮就是这条路的入口(把手上拿的东西直接换钱)
+- 这条路在游戏里的入口**应该是**商店菜单里的「**出售手中**」(把手上拿的东西直接换钱)——
+  但这个按钮只出现在老麦的标准答案里,**菜单本身没抓到**(见最后一节第 3 条)
 
 > 这是一口**无底的收购站**:系统不限量、不讲价。
 > 也就是说 `worth.yml` 里每一行都在定义"这个物品等于多少钱",
@@ -234,11 +235,13 @@ Jobs 允许一个人同时兼多个职业(这条是常识,素材里没验),所�
 
 ```yaml
 # - default: Increases every day
-# - streak: Resets if a day is missed          ← 本服用的是这个
+# - streak: Resets if a day is missed
 # - on_claim_only: Increases every day that a reward is claimed
 # - online_only: Increases every day that the player is online
 reward-mode: streak
 ```
+
+(上面四行是文件里的注释,原样照抄;生效值就是最后一行的 `streak`。)
 
 | 开关 | 值 | 实际影响(孩子能感觉到的) |
 |---|---|---|
@@ -248,7 +251,7 @@ reward-mode: streak
 | `streak-bypass` | `false` | 连胜**不会**跨过漏掉的天数。注释注明这个开关是"给服务器维护期用的" |
 | `enable-notifications` | `true` | 有可领的奖励时会提示 |
 | `upcoming-category` | `large` | 菜单里预告显示 `large` 这一类 |
-| `default-redeem-sound` | `ENTITY_PLAYER_LEVELUP` | 没单独指定音效时用它;实际各天写的是 `ENTITY_EXPERIENCE_ORB_PICKUP` |
+| `default-redeem-sound` | `ENTITY_PLAYER_LEVELUP` | 没单独指定音效时用它;素材里抓到完整段落的那三条(`default`/`day-1`/`day-2`)各自都写了 `ENTITY_EXPERIENCE_ORB_PICKUP` |
 
 ### 5.3 这张表其实在"罚断签",不只是"奖连签"
 
@@ -265,9 +268,11 @@ reward-mode: streak
 ② 更贵的那层 —— $150 / $200 / $350 / $600 这四个大奖全部推迟重算。
 
 > **奖励表的曲线不是"每天给多少",而是"断一天罚多少"。**
-> 这台服务器上的孩子是十几岁的中学生,**上学期间漏一天是常态** ——
-> 所以这个配置是"给天天上线的孩子发大奖",而不是"给所有孩子发日常津贴"。
-> 想改成对所有人都友好,动的是 `reward-mode`(换成 `on_claim_only`),不是动金额。
+> 老麦的 persona 里写着来玩的"大多是十几岁的中学生(16 岁上下)" ——
+> 他们上学期间能不能天天上线,我手上**没有数据**;
+> 但这张表的取向是明确的:"给天天上线的孩子发大奖",而不是"给所有孩子发日常津贴"。
+> 想改成对所有人都友好,按注释的语义该动的是 `reward-mode`(换成 `on_claim_only`)而不是金额 ——
+> **这一步是我读注释推的,没实测。**
 
 ### 5.4 连签满 30 天能拿多少(我自己加的,不是素材里的数字)
 
@@ -319,7 +324,7 @@ reward-mode: streak
 
 ## 七、想照着搭一台的话
 
-这套经济一共只用了 6 个插件,分工很干净:
+这套经济一共只用了 6 个插件(外加 GriefPrevention —— 它不发钱,但是最大的钱出口),分工很干净:
 
 | 插件 | 在经济里的角色 | 可以换成什么(我的判断,未实测) |
 |---|---|---|
@@ -341,8 +346,9 @@ Jobs 的具体发行版(菜单里写的只是 `Jobs`,"就职中 / 最高等级 2
 2. **`worth.yml` 是一口无限收购站。** 任何能自动化量产的物品在这张表里有价,就是一台印钞机。
 3. **两套价格容易脱节。** 系统收购价在 `worth.yml`,商店/摆摊价在别处;
    两边都能改、互相不知道 —— 这是套利最常见的来源。
-4. **停服维护要先开 `streak-bypass`。** 现在是 `false`,服务器关一天就把所有孩子的连签清零。
-   配置注释本身就写明了这个开关是给维护期用的。
+4. **停服维护要先开 `streak-bypass`。** 现在是 `false` —— 按注释的语义
+   (`streak` = 漏一天就重置),服务器关一整天应该会把所有孩子的连签清零;
+   **这一条是读注释推的,没实测过。** 但配置注释本身就写明了这个开关"是给服务器维护期用的"。
 
 ---
 
@@ -356,7 +362,8 @@ Jobs 的具体发行版(菜单里写的只是 `Jobs`,"就职中 / 最高等级 2
    点击执行什么命令也没抓到。所以"商店卖什么、什么价"这篇没有数据。
 3. **「出售手中」这个按钮本身没抓到。** 它的存在是从 AI 村民老麦的 `facts`/`quick-answers`
    配置里读到的(那是写给孩子的标准答案,也是配置,但**不等于**菜单真的长这样)。
-   `shop_main` 里除了 slot 4 的余额格子,别的格子都没抓到。
+   `shop_main` 里除了 slot 4 那个叫 `bal` 的格子(而且只抓到 `material` + `slot`,没有 lore 和命令),
+   别的格子一个都没抓到。
 4. **QuickShop 的税率、是否启用、向谁收** —— 素材里全是注释和一个 `account: tax`,没有生效值。
 5. **`sell-multipliers:` 的内容** 只看到这个键名,没看到下面的倍率。
 6. **`worth.yml` 的内容一行都没有。** 素材里只有文件路径,后面跟着一个孤零零的数字 `63` ——
@@ -368,9 +375,8 @@ Jobs 的具体发行版(菜单里写的只是 `Jobs`,"就职中 / 最高等级 2
    `category: small`;而 `upcoming-category: large` 说明确实存在 `large` 这一类。
 10. **菜单余额可能是错的,但我没复测。** §1 那条 `%vault_eco_balance%` vs `/balance`
     对不上,来自本仓库 `CHANGELOG.md` 里 2026-09-17 的一条记录,**不是**我这次抓素材时验的。
-11. **插件版本号全部未知**,Jobs 是不是 Jobs Reborn 也是推测。
-12. **链接 `03-land-claims.md` 的文件名是我假定的**(领地那篇还没写);
-    如果最终不叫这个名字,记得回来改这条链接。
-13. 素材里还混进了两份 **DeluxeMenus 自带的示例菜单**(`basicsmenu` / `advancedmenu`,
+11. **素材里插件版本号全部没有**,Jobs 是不是 Jobs Reborn 也是推测。
+    (`CHANGELOG.md` 里另有一条"EssentialsX 固定 2.21.0",但那条自己标着"日期未逐条复核"。)
+12. 素材里还混进了两份 **DeluxeMenus 自带的示例菜单**(`basicsmenu` / `advancedmenu`,
     都要 `deluxemenus.admin` 权限才能开)。里面那句 `eco take %player_name% 666`
     是**官方示例的假商店**,不是本服玩法 —— 别当成真的收费点。
