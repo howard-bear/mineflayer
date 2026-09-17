@@ -20,7 +20,7 @@ const collectBlock = require('mineflayer-collectblock').plugin
 const pvp = require('mineflayer-pvp').plugin
 // ⚠️ plan 也必须在这里引进来:planLoop 用到它,而 node --check 查不出"用了没导入"这种运行时错误,
 // 漏掉的话是【开机即 ReferenceError】,机器人根本起不来。
-const { decide, plan, chat } = require('./brain')
+const { decide, plan, chat, designHouse } = require('./brain')
 const memory = require('./memory')
 /*
  * 地图记忆(Owner:「得让他脑子里有地图啊,不能限制他的活动范围啊」)。
@@ -230,6 +230,7 @@ const AVOID_BLOCKS = ['sweet_berry_bush', 'cactus', 'powder_snow', 'magma_block'
   'wither_rose', 'fire', 'soul_fire', 'campfire', 'soul_campfire', 'lava']
 let lastRangedRunAt = 0
 let lastForcedCraftAt = 0
+let lastForcedStoreAt = 0
 let craftStallUntil = 0
 let craftSameWant = 0
 let craftLastWant = ''
@@ -514,8 +515,38 @@ function loadHome() {
  * ⚠️ 这同时修掉一个真 bug:Owner 一挪家,actGoHome 传送过去后会算出
  *    「动了 X 格但没到家」→ 返回失败 → 连败计数上涨 → go_home 被冷却掉,越挪越回不了家。
  */
+let lastOwnerHomeKeepLog = 0
 function adoptHomeIfMoved(before, label) {
   if (!homePos || !before || !bot || !bot.entity) return false
+  /*
+   * 🔴 Owner 亲手定的家,绝不许我自己"推断"着改掉 —— 这是我 2026-09-17 凌晨自己捅的娄子。
+   *
+   * 实测:这套反推一晚误判【4 次】,把家从 Owner 定的 (-17,159) 一路飘到 (-22,149):
+   *   17:09 → (-41,162)   17:15 → (-31,147)   17:29 → (-20,172)   17:50 → (-22,149)
+   * 而 Essentials 里的权威值【从头到尾都是 (-17.497, 63, 158.76),一次没变】。
+   *
+   * 机制:scheduleHomeResync 是发完 /home base 之后【5 秒】才读位置,
+   * 而它开着疾跑(moves.allowSprinting = true,约 5.6 格/秒),5 秒能跑 28 格 ——
+   * 于是"传送回家了、然后立刻跑开去干活"完全满足我那两条判据
+   * (①相对发令前挪了 >16 格 ②落点离旧家 >16 格)。
+   * **判据本身没错,错在【读位置的时机】。**
+   *
+   * 而且这个误判不是无害的:家决定它能在哪动土(buildRadius 24)、什么时候该回家,
+   * 家一飘,Owner 亲手选的位置就作废了。
+   *
+   * 两条改法:
+   *   ① Owner 定的家一律不动(要换位置请他再打一次 /sethome XiaoMai:base,
+   *      想立刻生效跑 sudo ~/sync_home.sh)—— **他的明确决定优先于我的推断**;
+   *   ② 非 Owner 定的家改用 forcedMove 事件触发(见 scheduleHomeResync)。
+   */
+  if (homeByOwner) {
+    if (Date.now() - lastOwnerHomeKeepLog > 600000) {
+      lastOwnerHomeKeepLog = Date.now()
+      log(`🏠 家是 Owner 在游戏里定的 (${Math.round(homePos.x)},${Math.round(homePos.z)}),我不自己改`
+        + ` —— 要换位置请他再打一次 /sethome XiaoMai:base`)
+    }
+    return false
+  }
   const now = bot.entity.position
   if (now.distanceTo(before) <= 16) return false     // 没传送 → 不认
   if (now.distanceTo(homePos) <= 16) return false    // 落在旧家 → 家没动
@@ -563,16 +594,85 @@ function forgetChestIfFarFromHome(reason) {
  * (和限流、放方块总闸是同一个思路),免得将来新加一处又漏掉。
  * pending 标记防止连发时堆一串定时器。
  */
+/*
+ * 🔴 「回家逃命」把死亡循环自己闭合了 —— 2026-09-17 07:5x 抓到的现场。
+ *
+ * 死亡时间分布是典型的爆发:22:30 十一次、22:31 七次、22:52 十一次。
+ * 而**死亡地点几乎全是 (-17,63,159) / (-17,64,158)** —— 那正是它的家、
+ * 也是它自己那栋 4×4 墙高 2、门洞敞开、没屋顶的泥土房子所在。凶手每次都是 zombie。
+ *
+ * 闭环:死 → 复活 → 逃命反射发 `/home base` → 传送到家 → 僵尸就蹲在那儿 → 死 → …
+ * 三方对账证实是真死亡(服务器统计 31 / 广播 31 / 记账 31,窗口 33 分钟),
+ * 折合每小时 56 次(终身平均 35)。那栋没有屋顶、门洞敞开的房子等于把僵尸圈在了它的落点上。
+ *
+ * 这道护栏只做一件事:**如果"传送回家"这个动作本身刚把它送进死亡,就暂时别再回家。**
+ * 判据:传送回家后 20 秒内就死 → 连续 2 次 → 家标记为"暂时不安全" 5 分钟,
+ * 期间 `/home base` 自动换成 `/spawn`(出生点是保护区,怪打不到它,能喘口气)。
+ * ⚠️ 不改夜间行为(躲屋里/用床/天黑不出门)—— 那是行为设计,等 Owner 拍板。
+ * ⚠️ 闸门设在 say() 这个唯一出口(和限流、家同步、放方块总闸同一个思路),
+ *    全文 8 处 `/home base` 一次覆盖,不会漏。
+ */
+let lastHomeTpAt = 0
+let homeDeathStreak = 0
+let homeUnsafeUntil = 0
+/*
+ * 🔴 真正的死亡闭环机制(2026-09-17 08:1x 查实,和我上面那道护栏猜的不一样):
+ *
+ * `Essentials/config.yml:1231` 写着 **`respawn-at-home: true`** ——
+ *   「When users die, should they respawn at their first home or bed, instead of the spawnpoint?」
+ * 也就是说**死了之后 EssentialsX 自动把它重生【在家】**,全程不经过 `/home base`。
+ * 所以闭环是:死 → 插件自动重生在家 → 僵尸就蹲在那儿 → 6 秒后又死 → …
+ * 日志里「☠️ 我死了」之后的第一条坐标连着五个 `(-17,63,159)`,就是家的位置,实锤。
+ * 这也解释了为什么我那道只拦 `/home base` 的护栏拦不住它。
+ *
+ * ⚠️ `respawn-at-home` 是**全服设置**(孩子们也受影响,而且对孩子是好事),改它是 Owner 的决定。
+ * 这里只做一件小麦自己的事:**刚死过的十几秒里,只要旁边有怪就先跑,别站在原地挨第二刀。**
+ * 平时的逃跑判据是"血量低",而刚重生时是满血 20 —— 那条判据在这个场景下正好不成立,
+ * 于是它站在僵尸面前满血等死。这一条就是补那个缺口。
+ */
+let justDiedUntil = 0
+let lastRespawnFleeLog = 0
+
 let homeResyncPending = false
 function scheduleHomeResync() {
   if (homeResyncPending || !bot || !bot.entity) return
+  if (homeByOwner) return        // Owner 定的家不需要核对,也不许我改(见 adoptHomeIfMoved)
   homeResyncPending = true
   const before = bot.entity.position.clone()
-  setTimeout(() => {
+  /*
+   * 🔴 用 forcedMove 事件触发,不用固定延时。
+   *
+   * forcedMove = 服务端真的把玩家挪走的那一瞬间(mineflayer 的 lib/plugins/physics.js:441 和 :453),
+   * 此刻读到的位置【就是落点本身】。
+   * 原来那个固定 5 秒延时读到的是"落点 + 它自己跑掉的距离" ——
+   * 疾跑 5 秒能跑 28 格,那正是昨夜 4 次误判的全部原因。
+   *
+   * 兜底 8 秒:没收到 forcedMove 说明命令没生效(冷却/被拒/读条被打断),
+   * 那就【放弃这次核对】,绝不拿当前位置去猜。
+   */
+  let done = false
+  const onForced = () => {
+    if (done) return
+    done = true
     homeResyncPending = false
-    // ⚠️ 不写静默 catch(整晚失效的泳池 bug 就是这么藏起来的)
-    try { adoptHomeIfMoved(before, '传送后台核对') } catch (e) { log('核对家的位置时出错:', e.message) }
-  }, 5000)
+    try { bot.removeListener('forcedMove', onForced) } catch (e) { /* 移不掉也无所谓,once 会自清 */ }
+    try {
+      // forcedMove 也会因【死亡重生】触发 —— 落在出生点附近的一律不认(家至少离出生点 80 格)
+      const now = bot.entity && bot.entity.position
+      if (now && Math.hypot(now.x - SPAWN.x, now.z - SPAWN.z) < 40) {
+        log('🏠 落点离出生点太近,这多半是死亡重生不是回家 —— 不改家的记录')
+        return
+      }
+      adoptHomeIfMoved(before, 'forcedMove 落点')
+    } catch (e) { log('核对家的位置时出错:', e.message) }
+  }
+  bot.once('forcedMove', onForced)
+  setTimeout(() => {
+    if (done) return
+    done = true
+    homeResyncPending = false
+    try { bot.removeListener('forcedMove', onForced) } catch (e) { /* 无所谓 */ }
+  }, 8000)
 }
 
 /*
@@ -620,8 +720,19 @@ function say(msg) {
      */
     // 🏠 Owner 可能在游戏里用 /sethome XiaoMai:base 把家挪走了。
     // 传送 5 秒后核对一次落点,发现对不上就以服务器为准(判据见 adoptHomeIfMoved)。
-    if (s === '/home base') scheduleHomeResync()
-    bot.chat(s)
+    let out = s
+    if (out === '/home base') {
+      if (Date.now() < homeUnsafeUntil) {
+        // 家那边刚刚连着把它送死,先别回去 —— 改去出生点喘口气(那儿是保护区)
+        const left = Math.round((homeUnsafeUntil - Date.now()) / 1000)
+        log(`🏚️ 家那边刚连着把我送死,${left} 秒内不回家 —— 这次改去出生点`)
+        out = '/spawn'
+      } else {
+        lastHomeTpAt = Date.now()
+        scheduleHomeResync()
+      }
+    }
+    bot.chat(out)
   } catch (e) { log('发言失败:', e.message) }
 }
 
@@ -983,7 +1094,20 @@ function buildState() {
       chestReachable = !!(b && /^(chest|trapped_chest)$/.test(b.name))
     }
   } catch (e) { /* 查不到就当没有 */ }
-  if (chestReachable || (canBuildHere && countItem(/^chest$/) > 0)) avail.push('store_items')
+  /*
+   * 🔴 2026-09-17 06:1x 补:门槛里还缺"有没有东西可存"这一半。
+   *
+   * 实测 35 分钟窗口:store_items 被选中 26 次,其中 **14 次**返回
+   * 「失败:身上没有可存的木头,或者箱子满了」—— 当时它背包里一块木头都没有。
+   * 菜单说"能存"、执行器必然失败,模型就一次次撞同一堵墙。
+   * 这正是上面那段注释自己警告过的病,只是当时只对齐了"有没有箱子"这一半。
+   *
+   * 执行器现在会存两类东西:①木料 ②背包空格 ≤2 时顺手清出去的家当。
+   * 所以门槛也要认这两类 —— **和执行器用同一个判据,一个字不差**。
+   */
+  // 🔴 和执行器共用 storableNow():它算出来能存 0 样,菜单就不提供这个动作
+  const worthStoring = storableNow().total > 0
+  if ((chestReachable || (canBuildHere && countItem(/^chest$/) > 0)) && worthStoring) avail.push('store_items')
   /*
    * 连败 3 次以上的【生产性】动作先冷一冷;但保命动作和【脱身动作】永远不冷却。
    *
@@ -2009,6 +2133,480 @@ async function coverFromArrows(target) {
   } catch (e) { coverFail++; return false }
 }
 
+
+/* ══════════════════════════════════════════════════════════════════
+ * 🧱 盖房子的物理前提:往【指定坐标】放一块方块
+ *
+ * Owner 的要求原话:「怎么造房子是他自己来决策啦 我非常期待小麦可以自己造出房子」。
+ * 但它现在【连一面墙都砌不出来】:全文唯一的建造出口 placeFromInventory
+ * 只能"在自己脚边的地面上放一块"(基准 = 脚下偏移 (dx,-1,dz),朝上 (0,1,0)),
+ * 没有任何往上叠、贴侧面的能力。这一段就是补那只手。
+ *
+ * 🔑 【总闸不用改】:已核实 bot.placeBlock 的包装器只比较
+ *    refBlock.position 的三个整数和 placeAllowedAt,**完全不看 faceVector** ——
+ *    所以贴顶面/侧面/底面都是白送的扩展点。
+ *
+ * 🔴 并发:coverFromArrows(挡箭)是反射层 fire-and-forget 调的(不 await),
+ *    和这里共用同一个 placeAllowedAt。后跑完的 finally 会把前一个的许可抹成 null,
+ *    于是前一个被【自己的总闸】拦下抛错。所以加一把锁,而且
+ *    **挡箭抢占、砌墙让路** —— 被射死是全天死因第一名,挡箭不检查这把锁;
+ *    砌墙这边自己回避,撞上就当"下轮再来",不写任何负面状态。
+ *    ⚠️ 绝不要为了"解决"这件事把总闸改回布尔 —— 那是它当初被升级成坐标匹配的原因。
+ * ══════════════════════════════════════════════════════════════════ */
+
+// 可以被当成空气覆盖掉的方块
+const REPLACEABLE_RE = /^(air|cave_air|void_air|short_grass|tall_grass|fern|large_fern|dead_bush|snow|seagrass|vine|sugar_cane|dandelion|poppy|blue_orchid|allium|azure_bluet|oxeye_daisy|cornflower|lily_of_the_valley|torchflower|.*_tulip)$/
+// 🔴 对着这些方块发放置包 = 打开它的界面,不是放方块(mineflayer 不会潜行)。绝不能当基准。
+const INTERACT_RE = /chest|barrel|furnace|crafting_table|_door|trapdoor|button|lever|sign|bed$|anvil|note_block|jukebox|shulker|hopper|dropper|dispenser|brewing|enchant|beacon|lectern|loom|smithing|stonecutter|grindstone|cartography|composter|campfire|candle|flower_pot|bell/
+// 保守起点。服务端上限约 4.5,但我没实测过 —— 探针会把真实距离打出来,再据此校准。
+const PLACE_REACH = parseFloat(process.env.PLACE_REACH || '3.6')
+
+let placeLockOwner = ''
+let placeLockAt = 0
+function takePlaceLock(who) {
+  const n = Date.now()
+  // 12 秒自愈:比最坏持有时间(equip + lookAt + placeBlock 的 5 秒等待)还长
+  if (placeLockOwner && n - placeLockAt < 12000) return false
+  placeLockOwner = who
+  placeLockAt = n
+  return true
+}
+function freePlaceLock(who) { if (placeLockOwner === who) { placeLockOwner = ''; placeLockAt = 0 } }
+
+function eyePos() { return bot.entity.position.offset(0, 1.62, 0) }
+
+/**
+ * 往 target 这一格放一块 itemName。
+ * @returns {{ok:boolean, code:string, why:string, dist:number, ms:number, face?:string}}
+ *   code: ok | already | occupied | self | nosupport | toofar | noitem | busy | guard | refused | error
+ *
+ * 🔴 code 和 why 都只讲【真实原因】,一个字都不许猜。
+ *    placeFromInventory 的唯一失败文案是"周围放不下…多半站在水里或不平的地方",
+ *    连服务器拒绝时也照说这句 —— 那句假话会经 memory.record 写进经验库反复喂回模型。
+ * 🔴 服务器拒绝那一句【至少五个成因】(实体挡路 / 手上不是可放的物品 / 放到自己身上 /
+ *    领地保护 / 反作弊取消),所以只报"服务器把这一格又变回去了",
+ *    **永远不许翻译成"这块地不是我的"**。
+ */
+async function placeAt(target, itemName) {
+  const t0 = Date.now()
+  const fail = (code, why, dist) => ({ ok: false, code, why, dist: dist || 0, ms: Date.now() - t0 })
+  try {
+    if (!bot || !bot.entity || !bot._placeGuardInstalled) return fail('guard', '放方块总闸还没装好,再等等')
+    const cur = bot.blockAt(target)
+    if (!cur) return fail('toofar', `(${target.x},${target.y},${target.z}) 那一格还没加载出来`)
+    // 幂等:已经是要的方块就当成功(重连/回执丢了/重复施工都靠这条兜住)
+    if (cur.name === itemName) return { ok: true, code: 'already', why: '本来就已经是这块方块', dist: 0, ms: Date.now() - t0 }
+    if (!REPLACEABLE_RE.test(cur.name)) return fail('occupied', `那一格已经是 ${cur.name},不是空的`)
+    // 绝不往自己身体占的两格里放
+    const f = bot.entity.position.floored()
+    if (target.x === f.x && target.z === f.z && (target.y === f.y || target.y === f.y + 1)) {
+      return fail('self', '那是我自己站着的地方')
+    }
+    const d = eyePos().distanceTo(new Vec3(target.x + 0.5, target.y + 0.5, target.z + 0.5))
+    if (d > PLACE_REACH) return fail('toofar', `离那一格 ${d.toFixed(1)} 格,手伸不到(上限 ${PLACE_REACH})`, d)
+    const it = bot.inventory.items().find((i) => i.name === itemName)
+    if (!it) return fail('noitem', `背包里没有 ${itemName}`, d)
+    // 挑基准面:底面 → 4 个侧面 → 顶面。face 是【从基准指向目标】的方向。
+    const DIRS = [[0, -1, 0, '底面'], [1, 0, 0, '东侧'], [-1, 0, 0, '西侧'],
+      [0, 0, 1, '南侧'], [0, 0, -1, '北侧'], [0, 1, 0, '顶面']]
+    let ref = null; let face = null; let faceName = ''
+    for (const dd of DIRS) {
+      const n = bot.blockAt(target.offset(dd[0], dd[1], dd[2]))
+      if (!n || REPLACEABLE_RE.test(n.name)) continue          // 空的,当不了基准
+      if (INTERACT_RE.test(n.name)) continue                   // 对着它放 = 开界面
+      if (/water|lava/.test(n.name)) continue
+      ref = n
+      face = new Vec3(-dd[0], -dd[1], -dd[2])                  // 基准 + face = 目标
+      faceName = dd[3]
+      break
+    }
+    if (!ref) return fail('nosupport', '这一格六面都没有能当基准的实体方块(悬空)', d)
+    await bot.equip(it, 'hand')
+    await bot.lookAt(new Vec3(target.x + 0.5, target.y + 0.5, target.z + 0.5), false)   // false = 正常转头速度,别瞬移(反作弊)
+    placeAllowedAt = ref.position
+    try {
+      await bot.placeBlock(ref, face)
+    } finally {
+      placeAllowedAt = null   // 无论成败立刻关闸
+    }
+    const put = bot.blockAt(target)
+    if (put && put.name === itemName) {
+      return { ok: true, code: 'ok', why: `放上了(基准是${faceName})`, dist: d, ms: Date.now() - t0, face: faceName }
+    }
+    return fail('refused', `发出去了但那一格现在是 ${put ? put.name : '读不到'} —— 服务器没让它成立`, d)
+  } catch (e) {
+    // 🔴 原话照抄,绝不翻译成"这块地不是我的" —— 同一句话至少五个成因
+    return fail('error', `放的时候报错:${short(e.message)}`)
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * 🔬 P0 物理探针(只在 ~/mcbot/PROBE_PLACE.on 存在时跑一次,跑完自己删掉标记)
+ *
+ * 唯一目的:用【真实的服务器】回答五件到现在还只是推理的事 ——
+ *   ① 它到底能不能把方块往上叠(砌墙的物理前提)
+ *   ② 总闸放不放行"非顶面"的基准(贴侧面)
+ *   ③ 这台服真实的手长是多少(把实测距离打出来,好校准 PLACE_REACH)
+ *   ④ 服务器/反作弊会不会把放置取消掉(看 refused 的原话)
+ *   ⑤ 领地保护到底回哪一句
+ *
+ * 零模型、零菜单、只在家附近动土、放的是泥土(建材,而且 MANMADE_RE 不含 dirt,
+ * 不会让门口的真树被误判成"别人的房子")。放下的方块【不挖回去】——
+ * 那本来就是墙的第一批砖。
+ * ────────────────────────────────────────────────────────────────── */
+let probePlaceDone = false
+let lastProbeCheckAt = 0
+async function runPlaceProbe() {
+  const F = require('path').join(__dirname, 'PROBE_PLACE.on')
+  const finish = (msg) => {
+    log(`🔬 探针汇总:${msg}`)
+    try { require('fs').unlinkSync(F) } catch (e) { log('删探针标记失败:', e.message) }
+  }
+  if (!homePos) { log('🔬 探针:还没有家,先不动土'); return }
+  const dHome = bot.entity.position.distanceTo(homePos)
+  if (dHome > CFG.buildRadius) {
+    log(`🔬 探针:离家 ${Math.round(dHome)} 格(>${CFG.buildRadius}),等它回家再跑 —— 标记先留着`)
+    probePlaceDone = false   // 不算跑过,下次再来
+    return
+  }
+  const dirt = bot.inventory.items().find((i) => i.name === 'dirt')
+  if (!dirt || dirt.count < 3) { finish(`背包里泥土只有 ${dirt ? dirt.count : 0} 块,不够探(要 3 块),这次放弃`); return }
+  if (!takePlaceLock('probe')) { log('🔬 探针:放置锁被占(多半在挡箭),下轮再来'); probePlaceDone = false; return }
+  try {
+    const me = bot.entity.position.floored()
+    // 找一个脚边 2 格、地面是实体、上面是空的落脚点
+    let base0 = null
+    for (const dd of [[2, 0], [-2, 0], [0, 2], [0, -2], [2, 2], [-2, -2]]) {
+      const c = me.offset(dd[0], 0, dd[1])
+      const ground = bot.blockAt(c.offset(0, -1, 0))
+      const space = bot.blockAt(c)
+      if (!ground || REPLACEABLE_RE.test(ground.name) || /water|lava/.test(ground.name)) continue
+      if (!space || !REPLACEABLE_RE.test(space.name)) continue
+      base0 = c
+      break
+    }
+    if (!base0) { finish('脚边 6 个方向都找不到"地面是实的、上面是空的"落脚点,这次放弃'); return }
+    const res = []
+    // 第 1 块:脚边地面(基准 = 它下面那块的顶面)—— 这是已有能力的对照
+    res.push(['① 地面一块(顶面基准)', await placeAt(base0, 'dirt')])
+    // 第 2 块:叠在第 1 块上面 —— 🔴 这就是"能不能往上砌"的关键一问
+    res.push(['② 叠在上面(顶面基准)', await placeAt(base0.offset(0, 1, 0), 'dirt')])
+    // 第 3 块:贴在第 2 块的侧面 —— 🔴 测总闸放不放行"非顶面"基准
+    res.push(['③ 贴侧面(侧面基准)', await placeAt(base0.offset(1, 1, 0), 'dirt')])
+    // 第 4 块:再往上一层 —— 测手长上限
+    res.push(['④ 再叠一层(测手长)', await placeAt(base0.offset(0, 2, 0), 'dirt')])
+    let okN = 0
+    for (const [tag, r] of res) {
+      if (r.ok) okN++
+      log(`🧱 探针 ${tag}: ${r.ok ? '✅ 成功' : '❌ 失败'} code=${r.code} 距离=${r.dist.toFixed(2)} 耗时=${r.ms}ms ${r.face ? '基准=' + r.face : ''} —— ${r.why}`)
+    }
+    log(`📏 实测:眼睛在 y+1.62,PLACE_REACH 当前设 ${PLACE_REACH};` +
+      `四次的距离分别是 ${res.map(([, r]) => r.dist.toFixed(2)).join(' / ')}`)
+    finish(`${okN}/4 成功。` + (okN >= 2
+      ? '✅ 它的手能往上砌 —— 盖房子的物理前提成立,可以做 P1(砌一圈墙)'
+      : '❌ 往上砌没成功,P1 先别动,看上面每一行的 code 和原话'))
+  } finally {
+    freePlaceLock('probe')
+  }
+}
+
+
+
+/* ══════════════════════════════════════════════════════════════════
+ * 🛡️ 把身上的盔甲穿起来
+ *
+ * 2026-09-17 05:2x 查实:它护甲槽【四格全空】,而背包里躺着
+ * 金胸甲×2、金头盔、皮头盔,还有三件附魔的(水下速掘 / 保护II / 水下呼吸II)。
+ * 而服务器难度是 **Hard**。
+ *
+ * 真实死亡数据(读服务器自己的玩家统计 world/stats/<uuid>.json,
+ * 这才是权威 —— 见下面那条更正):**931 次 / 30.9 小时 ≈ 每小时 30 次**。
+ *
+ * 🔴 顺带更正一个我一直用错的基准:
+ *    我整晚拿 `grep latest.log` 当"服务器权威死因",算出来每小时 3~7 次。
+ *    实测对照统计文件:**控制台日志漏记死亡约 5~10 倍**。
+ *    以后要真实死亡数,读 `world/stats/<uuid>.json` 的 minecraft:deaths,
+ *    而且【两次读之前都要先 save-all】—— 统计是定时落盘的,
+ *    只在第二次前 save-all 会把"上次存盘以来的累计"错算成"这段时间的增量"(我刚踩过)。
+ *
+ * ⚠️ 排序只看材质,不看附魔和耐久 —— 所以一件"保护II 的金甲"会输给一件白板铁甲。
+ *    这是已知的取舍:分不清就先按材质,总比四格全空强。
+ *    (社区有 mineflayer-armor-manager 专门干这个,但它同样只看材质名前缀,
+ *     而且我们不想为这件事再多一个依赖。)
+ * ══════════════════════════════════════════════════════════════════ */
+const ARMOR_SLOTS = [
+  { slot: 5, dest: 'head', re: /_helmet$/, cn: '头盔' },
+  { slot: 6, dest: 'torso', re: /_chestplate$/, cn: '胸甲' },
+  { slot: 7, dest: 'legs', re: /_leggings$/, cn: '护腿' },
+  { slot: 8, dest: 'feet', re: /_boots$/, cn: '靴子' },
+]
+const ARMOR_RANK = ['netherite', 'diamond', 'iron', 'chainmail', 'golden', 'leather']
+function armorScore(name) {
+  for (let i = 0; i < ARMOR_RANK.length; i++) {
+    if (String(name).startsWith(ARMOR_RANK[i] + '_')) return ARMOR_RANK.length - i
+  }
+  if (/^turtle_helmet$/.test(name)) return 4      // 海龟壳约等于铁
+  return 0
+}
+let lastArmorAt = 0
+async function wearBestArmor() {
+  if (!bot || !bot.inventory) return 0
+  if (Date.now() - lastArmorAt < 30000) return 0
+  lastArmorAt = Date.now()
+  let n = 0
+  for (const s of ARMOR_SLOTS) {
+    const worn = bot.inventory.slots[s.slot]
+    const wornScore = worn ? armorScore(worn.name) : 0
+    let best = null
+    for (const it of bot.inventory.items()) {          // items() 不含护甲槽,不会把已穿的again 算进来
+      if (!s.re.test(it.name)) continue
+      if (armorScore(it.name) > (best ? armorScore(best.name) : 0)) best = it
+    }
+    if (!best) continue
+    if (armorScore(best.name) <= wornScore) continue
+    try {
+      await bot.equip(best, s.dest)
+      n++
+      log(`🛡️ 穿上${s.cn} ${best.name}${worn ? `(换下 ${worn.name})` : '(原来这格是空的)'}`)
+      await new Promise((r) => setTimeout(r, 150))     // 别一梭子换完,服务器装着 GrimAC
+    } catch (e) { log(`🛡️ 穿 ${best.name} 没成功:${short(e.message)}`) }
+  }
+  return n
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 🏠 自己盖一间房子
+ *
+ * Owner 2026-09-17 原话:「怎么造房子是他自己来决策啦 我非常期待小麦可以自己造出房子」。
+ *
+ * 分工(和 chat() 的 give 字段同一套,那次 Owner 纠正过我"别把判断写进代码"):
+ *   **模型定**:用什么材料、门朝哪边、盖多大 —— 人格和当下处境该起作用的地方。
+ *   **代码定**:哪几格要放、够不够得着、放不放得下、别人的地不能碰 —— 几何和物理。
+ * 🔴 为什么不让模型自己算坐标:实测这类小模型"从菜单挑一个 + 输出严格 JSON"可靠(5/5),
+ *    但空间判断很差、游戏知识常错。让它吐坐标 = 把最不可靠的能力放在最关键的位置。
+ *
+ * 🔴 为什么【不进决策菜单】,而是一条硬规则:
+ *    实测拿真实系统提示打真网关,"空手"处境下 6/6 次模型都选了 craft stick,
+ *    build_house 一次没被选中。本代码里已有两个同类 0 采纳先例
+ *    (「写了最优先安家」→ 240 秒 0 次 set_home;「把我空手摆到眼前 + 写做剑优先级很高」→ 做剑 0 次)。
+ *    **靠菜单结构和硬规则,别靠叮嘱。**
+ *
+ * 🔴 硬规则的位置:排在【吃饭和打猎之后】。
+ *    依据是本文件里那条血的教训:forced 是单一插槽,craft 排在 eat/hunt 前面,
+ *    结果它"做木板做到饿死"。盖房子比做木板更长,更不能抢在吃饭前面。
+ * ══════════════════════════════════════════════════════════════════ */
+const HOUSE_FILE = require('path').join(__dirname, 'house.json')
+let house = null
+let buildHousePausedUntil = 0
+function saveHouse() {
+  try { require('fs').writeFileSync(HOUSE_FILE, JSON.stringify(house)) }
+  catch (e) { log('存房子进度失败:', e.message) }
+}
+function loadHouse() {
+  try {
+    const h = JSON.parse(require('fs').readFileSync(HOUSE_FILE, 'utf8'))
+    if (h && h.origin && typeof h.origin.x === 'number') {
+      house = h
+      log(`读到房子进度:地基 (${h.origin.x},${h.origin.y},${h.origin.z}) 边长 ${h.size} 材料 ${h.material} 门朝${h.door}`
+        + ` —— ${h.done ? '已盖好' : '还没盖完'}`)
+    }
+  } catch (e) { /* 还没开工,正常 */ }
+}
+
+// 门开在哪一格(墙上的一列,两层都不放)
+function doorCell(size, door) {
+  if (door === '北') return { dx: 1, dz: 0 }
+  if (door === '南') return { dx: 1, dz: size - 1 }
+  if (door === '西') return { dx: 0, dz: 1 }
+  return { dx: size - 1, dz: 1 }        // 东
+}
+
+// 这间房子要放的全部格子,按【先下层后上层】排序(下层塌了上层没处贴)
+function houseBlocks(h) {
+  const out = []
+  const dc = doorCell(h.size, h.door)
+  for (let y = 0; y < h.height; y++) {
+    for (let dz = 0; dz < h.size; dz++) {
+      for (let dx = 0; dx < h.size; dx++) {
+        const onWall = dx === 0 || dz === 0 || dx === h.size - 1 || dz === h.size - 1
+        if (!onWall) continue
+        if (dx === dc.dx && dz === dc.dz) continue    // 门洞:整列都不放
+        out.push(new Vec3(h.origin.x + dx, h.origin.y + y, h.origin.z + dz))
+      }
+    }
+  }
+  return out
+}
+
+/*
+ * 选地基:在家附近找一块【地面是实的、上面两层是空的】的正方形。
+ * ⚠️ 只看周长那一圈的格子 —— 屋里有什么(比如它自己的箱子)不影响,
+ *    反而把箱子圈进屋里是好事。
+ */
+function pickHousePlot(size) {
+  if (!homePos) return null
+  const hx = Math.floor(homePos.x)
+  const hy = Math.floor(homePos.y)
+  const hz = Math.floor(homePos.z)
+  const R = Math.max(4, Math.floor(CFG.buildRadius) - size - 2)
+  let best = null; let bestD = 1e9
+  for (let ox = hx - R; ox <= hx + R; ox++) {
+    for (let oz = hz - R; oz <= hz + R; oz++) {
+      let okY = null; let good = true
+      for (let dz = 0; dz < size && good; dz++) {
+        for (let dx = 0; dx < size && good; dx++) {
+          const onWall = dx === 0 || dz === 0 || dx === size - 1 || dz === size - 1
+          if (!onWall) continue
+          // 地面那一格:在 hy-1 ± 1 之内找实地,保证整圈同高
+          let found = null
+          for (const yy of [hy - 1, hy, hy - 2]) {
+            const g = bot.blockAt(new Vec3(ox + dx, yy, oz + dz))
+            if (g && !REPLACEABLE_RE.test(g.name) && !/water|lava/.test(g.name)) { found = yy; break }
+          }
+          if (found === null) { good = false; break }
+          if (okY === null) okY = found
+          else if (found !== okY) { good = false; break }      // 整圈必须同高,否则墙会错层
+          for (let y = 1; y <= 2; y++) {
+            const s = bot.blockAt(new Vec3(ox + dx, found + y, oz + dz))
+            if (!s || !REPLACEABLE_RE.test(s.name)) { good = false; break }
+          }
+        }
+      }
+      if (!good || okY === null) continue
+      const cx = ox + (size - 1) / 2; const cz = oz + (size - 1) / 2
+      const d = Math.hypot(cx - homePos.x, cz - homePos.z)
+      if (d > CFG.buildRadius - 2) continue
+      if (d < bestD) { bestD = d; best = { x: ox, y: okY + 1, z: oz } }
+    }
+  }
+  return best
+}
+
+/*
+ * 施工。一次调用最多放 6 块 / 最多 20 秒 —— 动作封顶是 30 秒,留足余量,
+ * 被保命反射打断也只丢掉这一趟的几块,进度在 house.json 里,下次接着放。
+ */
+async function actBuildHouse() {
+  if (!homePos) return '失败:还没有家,不知道该在哪儿盖'
+  if (house && house.done) return '成功:房子已经盖好了'
+  // 太远先回家(和 build_base 一个套路)
+  let d = bot.entity.position.distanceTo(homePos)
+  if (d > CFG.buildRadius) {
+    const beforeTp = bot.entity.position.clone()
+    say('/home base')
+    await new Promise((r) => setTimeout(r, 3500))
+    adoptHomeIfMoved(beforeTp, 'build_house')
+    d = bot.entity.position.distanceTo(homePos)
+    if (d > CFG.buildRadius) return `失败:想回家盖房子,但传送后仍离家 ${Math.round(d)} 格`
+  }
+  // ① 还没设计过 → 让模型定(材料/门朝向/多大),代码只给它【它真的有的】材料当选项
+  if (!house) {
+    const stock = bot.inventory.items()
+      .filter((i) => /^(dirt|cobblestone|.*_planks|.*_log|stone|andesite|granite|diorite|sand)$/.test(i.name) && i.count >= 20)
+      .map((i) => `${i.name} ${i.count}块`)
+    if (!stock.length) return '失败:身上没有够盖墙的材料(要一种攒到 20 块以上)'
+    let design = null
+    try {
+      design = await designHouse({
+        我有的材料: stock,
+        我的家在: `(${Math.round(homePos.x)},${Math.round(homePos.z)})`,
+        现在: bot.time && bot.time.isDay ? '白天' : '晚上',
+      }, CFG.brain, roles.persona(ROLE.key).text)   // ⚠️ persona() 返回对象,要取 .text(其它调用点都是这么写的)
+    } catch (e) { log('房子设计调用出错:', short(e.message)) }
+    const fb = { material: stock[0].split(' ')[0], door: '南', size: 4 }
+    const dz = design || fb
+    // 🔴 如实标注哪些是它自己定的、哪些是我兜的 —— 别把兜底说成"它的主意"
+    log(`🏠 设计:材料=${dz.material} 门朝${dz.door} 边长${dz.size}`
+      + `(${design ? '✅ 这是它自己定的' : '⚠️ 模型没给出合格答案,用了默认值'};可选材料 ${stock.join('、')})`)
+    const origin = pickHousePlot(dz.size)
+    if (!origin) return `失败:家附近找不到一块 ${dz.size}×${dz.size} 的平地(要整圈同高、上面两层是空的)`
+    house = { origin, size: dz.size, height: 2, door: dz.door, material: dz.material, done: false, byModel: !!design }
+    saveHouse()
+    log(`🏠 地基定在 (${origin.x},${origin.y},${origin.z}),一共要放 ${houseBlocks(house).length} 块`)
+  }
+  const mat = house.material
+  const have = countItem(new RegExp('^' + mat + '$'))
+  const plan = houseBlocks(house)
+  const todo = []
+  for (const p of plan) {
+    const b = bot.blockAt(p)
+    if (!b) { todo.push(p); continue }
+    if (b.name !== mat && REPLACEABLE_RE.test(b.name)) todo.push(p)
+  }
+  if (!todo.length) {
+    house.done = true
+    saveHouse()
+    log(`🎉 房子墙砌好了!地基 (${house.origin.x},${house.origin.y},${house.origin.z}),`
+      + `${house.size}×${house.size} 墙高 ${house.height},门朝${house.door},材料 ${mat}`)
+    return `成功:房子的墙全砌好了(${house.size}×${house.size},门朝${house.door})`
+  }
+  if (have < 1) return `失败:${mat} 用完了,还差 ${todo.length} 块才砌得完`
+  /*
+   * ② 走到【屋内】站好 —— 不是"靠近中心"就行。
+   *
+   * 🔴 实测教训(2026-09-17 04:1x,这个 bug 是我自己写出来的):
+   *    原来写的是"离中心超过 2.5 格才走过去"。但 4×4 的中心到墙格只有 1.5~2.12 格,
+   *    所以它完全可以【正站在一格墙上】而判定"已经到位",于是:
+   *      失败:一块也没放上 —— self:那是我自己站着的地方
+   *      失败:一块也没放上 —— toofar:离那一格 3.7 格,手伸不到
+   *    容差必须比"中心到墙的距离"小,而且要明确站到一个【屋内】格子上。
+   * 4×4 的屋内格子只有 (1,1)(1,2)(2,1)(2,2) 四个;站在任一格,
+   * 到最远那面墙约 2.2 格、到墙顶那层约 2.3 格,都在手长 3.6 之内。
+   */
+  const inside = []
+  for (let dx = 1; dx <= house.size - 2; dx++) {
+    for (let dz = 1; dz <= house.size - 2; dz++) inside.push({ x: house.origin.x + dx, z: house.origin.z + dz })
+  }
+  const me0 = bot.entity.position.floored()
+  const standingInside = inside.some((c) => c.x === me0.x && c.z === me0.z)
+  if (!standingInside) {
+    // 挑一个屋内格子:离当前位置最近的那个
+    let pick = inside[0]; let bd = 1e9
+    for (const c of inside) {
+      const dd = Math.hypot(bot.entity.position.x - (c.x + 0.5), bot.entity.position.z - (c.z + 0.5))
+      if (dd < bd) { bd = dd; pick = c }
+    }
+    try {
+      await Promise.race([
+        bot.pathfinder.goto(new goals.GoalNearXZ(pick.x + 0.5, pick.z + 0.5, 0)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('20秒没走到工地')), 20000)),
+      ])
+    } catch (e) { try { bot.pathfinder.setGoal(null) } catch (e2) { /* 忽略 */ } }
+    const me1 = bot.entity.position.floored()
+    if (!inside.some((c) => c.x === me1.x && c.z === me1.z)) {
+      return `失败:走不进屋里站好(想站 (${pick.x},${pick.z}),现在在 (${me1.x},${me1.z}))`
+        + `,还差 ${todo.length} 块`
+    }
+  }
+  // ③ 放砖
+  if (!takePlaceLock('house')) return '失败:正在挡箭,砌墙让路,下次再来'
+  const t0 = Date.now()
+  let put = 0; let lastWhy = ''; let refused = 0
+  try {
+    for (const p of todo) {
+      if (put >= 6 || Date.now() - t0 > 20000) break
+      const r = await placeAt(p, mat)
+      if (r.ok) { put++; log(`🧱 (${p.x},${p.y},${p.z}) 放上 ${mat}(${r.why})`); continue }
+      lastWhy = `${r.code}:${r.why}`
+      if (r.code === 'refused') refused++
+      if (r.code === 'noitem') break
+      // toofar 说明站位不对 —— 这一趟先跳过它,下一趟走位变了可能就够得着
+    }
+  } finally { freePlaceLock('house') }
+  const left = todo.length - put
+  if (put === 0) {
+    /*
+     * 🔴 一块也没放上就冷 60 秒 —— 否则硬规则每 3 秒重来一次,
+     *    实测 5 分钟里触发了 72 次,把别的活全挤掉了(虽然血/食门槛拦着,不会饿死,
+     *    但等于空转)。和"连败冷却"一个道理:撞墙就退一步,别贴着墙磨。
+     */
+    buildHousePausedUntil = Date.now() + 60000
+    return `失败:一块也没放上(还差 ${left} 块)—— ${lastWhy || '没找到能放的格子'};先歇 60 秒再试`
+  }
+  return `成功:又砌了 ${put} 块${mat},还差 ${left} 块`
+    + (refused ? `(其中 ${refused} 次服务器没让它成立)` : '')
+}
+
 /**
  * 做东西。链条:原木 → planks → crafting_table → 放下工作台 → chest。
  * 判定同样只认【背包里真的多出来了几个】,不认"合成动作有没有跑完"。
@@ -2120,6 +2718,48 @@ async function actCraft(rawItem) {
 }
 
 /** 把身上的木头存进箱子 —— 这是"保住成果":死了背包会掉,存进箱子才是真的到手。 */
+/*
+ * 🔴 「能存进箱子的东西」—— 菜单门槛和执行器【共用这一个函数】。
+ *
+ * 今晚已经四次栽在"菜单门槛和执行器用了不同判据"上:
+ *   ① collectblock 的背包满(菜单说能砍,执行器必然抛错)
+ *   ② store_items 的"有没有箱子"(门槛只看箱子,执行器只认自己的箱子)
+ *   ③ store_items 的"有没有东西可存"(门槛完全不看)
+ *   ④ 上一次我把门槛改成 `有木料 || 空格≤2`,但执行器在"空格≤2 且既没木料
+ *      也没可清家当"时仍然失败 —— 实测 18 次选中里 14 次失败(成功率 7%)。
+ * **所以这一次不是"再对齐一次判据",而是把判据抽成唯一的一个函数**,
+ * 让两边在结构上不可能再漂。这是今晚最该记住的一条模式。
+ */
+const STORE_NEVER = /_helmet$|_chestplate$|_leggings$|_boots$|_sword$|_axe$|_pickaxe$|_shovel$|_hoe$|shield|bow$|arrow$|^crafting_table$|^chest$|^torch$/
+const STORE_KEEP_SOME = { dirt: 32, sand: 16, stick: 16, cobblestone: 32 }
+/**
+ * 现在到底有多少东西是【真能存进箱子】的。
+ * @returns {{wood:number, extra:number, total:number, items:Array}}
+ *   wood  = 木料(原木/木板),任何时候都存
+ *   extra = 背包快满(空格≤2)时才清的"家当";不满时一律算 0 —— 和执行器完全一致
+ */
+function storableNow() {
+  const out = { wood: 0, extra: 0, total: 0, items: [] }
+  try {
+    if (!bot || !bot.inventory) return out
+    const tight = bot.inventory.emptySlotCount() <= 2
+    for (const it of bot.inventory.items()) {
+      if (/_log$|_planks$/.test(it.name)) { out.wood += it.count; continue }
+      if (!tight) continue
+      if (STORE_NEVER.test(it.name)) continue
+      if (bot.registry && bot.registry.foodsByName && bot.registry.foodsByName[it.name]) continue
+      // ⚠️ 1.20.5 之后物品数据从 NBT 改成 components,两个字段都要看
+      if (it.nbt || (it.components && it.components.length)) continue
+      const give = it.count - (STORE_KEEP_SOME[it.name] || 0)
+      if (give <= 0) continue
+      out.extra += give
+      out.items.push(it)
+    }
+  } catch (e) { log('算可存物品出错:', e.message) }
+  out.total = out.wood + out.extra
+  return out
+}
+
 async function actStoreItems() {
   const mcData = require('minecraft-data')(bot.version)
   /*
@@ -2147,18 +2787,109 @@ async function actStoreItems() {
   } catch (e) { return `失败:走不到箱子那儿(${short(e.message)})` }
   let win
   try { win = await bot.openChest(chest) } catch (e) { return `失败:打不开箱子(${short(e.message)})` }
+  /*
+   * 🔬 诊断「destination full 而箱子明明是空的」。
+   *
+   * 实测 2026-09-17 09:0x:身上 140 块木头、RCON 读箱子只用了 **2/27 个槽位**,
+   * 却连着报 `Error: destination full`。
+   * 查 mineflayer 源码 lib/plugins/inventory.js:327-330 —— 这个错只在
+   * `window.firstEmptySlotRange(destStart, destEnd)` 返回 null 时抛,
+   * 也就是**目标范围里一个空槽都没有**。而箱子有 25 个空槽,两件事对不上。
+   * 唯一合理的解释是:**它打开的那个窗口不是我读的那个箱子**
+   * (后面紧跟着的 `走不到箱子那儿(No path to the goal!)` 也指向同一个方向)。
+   * 所以先把窗口的真实形状打出来 —— 这是个未解问题,留给下次带证据查。
+   */
+  try {
+    const invStart = win.inventoryStart
+    let free = 0
+    for (let i = 0; i < invStart; i++) if (!win.slots[i]) free++
+    log(`🔬 开箱子:窗口 id=${win.id} type=${win.type} 容器槽 0~${invStart - 1}(共 ${invStart})、其中空 ${free} 个;`
+      + `箱子方块在 (${chest.position.x},${chest.position.y},${chest.position.z})、我在 `
+      + `(${Math.round(bot.entity.position.x)},${Math.round(bot.entity.position.y)},${Math.round(bot.entity.position.z)})、`
+      + `距离 ${bot.entity.position.distanceTo(chest.position).toFixed(1)} 格`)
+  } catch (e) { log('看箱子窗口形状出错:', e.message) }
   let n = 0
+  let extra = 0
+  const extraNames = []
   try {
     for (const it of bot.inventory.items().filter((i) => /_log$|_planks$/.test(i.name))) {
       await win.deposit(it.type, null, it.count)
       n += it.count
     }
-  } catch (e) { /* 箱子满了/存到一半失败,下面按实际存进去的数量如实汇报 */ }
+    /*
+     * 🔴 背包快满了的话,把【身上用不着的家当】也一起存进去 —— 这是 2026-09-17 05:0x 才补的。
+     *
+     * 实测现场:`🧹 背包 36 格全满、却没有可以扔的杂物` 一夜 52 次。
+     * 36 格全满,但一样"杂物"都没有 —— 塞满它的是它自己攒的家当:
+     *   橡树苗×43、云杉苗×18、樱花苗×12、白桦苗×4(光树苗就 4 格)、竹子×37、线×21、
+     *   苔藓×10、沙×9、钻石×15、铁锭×2、蜂蜜块、旗帜、罂粟、指南针、活板门、床……
+     * 后果和背包满是同一个:collectblock 在挖之前就抛 `no defined chest locations`,
+     * 每一次砍树都必然失败(gather_wood 从 63% 掉回 41%)。
+     *
+     * 判据用【空格 ≤2】而不是"满了":满了才存就已经耽误了一轮砍树。
+     * ⚠️ 只存【存进箱子不影响它干活】的东西。不碰:食物、工具武器、**所有盔甲**
+     *    (没装 armor-manager,我分不清哪件更好,宁可让它穿着)、
+     *    工作台/箱子、以及一定量的建材和木棍(留着随手用)。
+     * ⚠️ 钻石和铁锭【存进箱子更安全】—— 死了掉一地比放在家里箱子里强。
+     */
+    // 🔴 清单来自 storableNow() —— 和菜单门槛【同一个函数】,不可能再漂(见那段注释)
+    for (const it of storableNow().items) {
+      const give = it.count - (STORE_KEEP_SOME[it.name] || 0)
+      if (give <= 0) continue
+      await win.deposit(it.type, null, give)
+      extra += give
+      extraNames.push(`${it.name}×${give}`)
+      if (bot.inventory.emptySlotCount() >= 8) break          // 腾出 8 格就够了,别把家当全搬空
+    }
+  } catch (e) {
+    /*
+     * 🔴 这里原来是【完全静默的 catch】—— 而它正在骗人。
+     *
+     * 实测 2026-09-17 09:0x:机器人身上有 **140 块木头**、箱子只用了 **2/27 个槽位**,
+     * 却连着报「没往箱子里存进任何东西」。也就是说 `win.deposit()` 在抛错,
+     * 而这个空 catch 把原因整个吞掉了,于是我只能猜"多半是箱子满了"——
+     * 而箱子明明是空的。
+     * 记忆里那条教训原话就是「别再写静默 catch」(整晚失效的泳游自救 bug 就是这么藏的),
+     * 我还是在这儿又踩了一次。先把原话打出来,再谈修。
+     */
+    log(`📦 往箱子里存东西时报错(已存进 ${n} 木料 + ${extra} 家当):${e && e.name ? e.name + ': ' : ''}${short(e && e.message ? e.message : String(e))}`)
+    /*
+     * 🔴 箱子真的满了 → 忘掉它,让"没箱子就回家造一个"那条硬规则接手。
+     *
+     * 实测 2026-09-17 09:0x:逐槽位点名 + 负对照确认这个箱子是 **27/27 满的**,
+     * 而它身上压着 131~148 块木头存不进去,于是 store_items 连着失败、木头越积越多。
+     * mineflayer 的 `destination full` 就是这个意思(lib/plugins/inventory.js:327-330:
+     * `firstEmptySlotRange` 返回 null 才抛)。
+     *
+     * ⚠️ 我一度以为"箱子只用了 2/27,所以这个错在骗人" —— 那是因为我把 RCON 的输出
+     *    截断在 300 字符再去数槽位,**只数到了前 2 个**。又一次栽在截断上
+     *    (和 `cut -c` 切坏中文是同一类:工具在骗人,而错的方向看起来很合理)。
+     *    查容器一律逐槽位点名 + 负对照。
+     *
+     * 为什么原来不会自己造第二个:硬规则的条件是 `!myChest`,
+     * 而 myChest 一直指着那个满的箱子,所以永远不触发。
+     * 忘掉它之后,规则就会让它回家做一个新的、摆下、并把新箱子记成自己的
+     * —— 和「箱子离家太远就忘掉」是同一个套路。
+     */
+    if (/destination full/i.test(String(e && e.message))) {
+      log(`📦 这个箱子(${myChest ? `${myChest.x},${myChest.y},${myChest.z}` : '?'})塞满了 —— 忘掉它,回头自己再造一个`)
+      myChest = null
+      try { require('fs').writeFileSync(MYCHEST_FILE, 'null') } catch (e2) { log('清箱子存档失败:', e2.message) }
+    }
+  }
+  if (extra > 0) {
+    log(`📦 背包快满了,顺手把用不着的家当也存了:${extraNames.join('、')}(现在空出 ${bot.inventory.emptySlotCount()} 格)`)
+  }
   try { win.close() } catch (e) { /* 忽略 */ }
-  if (n <= 0) return '失败:身上没有可存的木头,或者箱子满了'
+  if (n <= 0 && extra <= 0) {
+    const s = storableNow()
+    return `失败:没往箱子里存进任何东西(木料 ${s.wood}、可清的家当 ${s.extra}、背包空 ${bot.inventory.emptySlotCount()} 格)`
+      + ' —— 多半是箱子满了'
+  }
   storedTotal += n
   saveProgress()   // 立刻落盘 —— 上一版只在内存里,我每次部署重启都把它的进度清零了
-  return `成功:往箱子里存了 ${n} 个,累计存了 ${storedTotal} 个`
+  return `成功:往箱子里存了 ${n} 个木料,累计存了 ${storedTotal} 个`
+    + (extra > 0 ? `;另外腾出格子存了 ${extra} 样别的(现在空 ${bot.inventory.emptySlotCount()} 格)` : '')
 }
 
 async function executeAction(a) {
@@ -2186,6 +2917,8 @@ async function executeAction(a) {
     case 'store_items':
       stopFollow(true)
       return await actStoreItems()
+    case 'build_house':
+      return await actBuildHouse()
     case 'build_base':
       stopFollow(true)
       return await actBuildBase()
@@ -2371,7 +3104,41 @@ function reflexTick() {
      * 函数自己带"真的 0 空格"判据 + 30 秒节流,没满的时候开销可以忽略。
      * ⚠️ 不写静默 catch —— 整晚失效的泳池自救 bug 就是被静默 catch 藏起来的。
      */
+    /*
+     * 🏃 刚死过就别站在原地 —— 这是 respawn-at-home 造成的死亡闭环的对策。
+     * 重生时是满血 20,而平时的逃跑判据是"血量低",正好不成立,
+     * 于是它满血站在僵尸面前等死。这里在刚死过的 12 秒内把判据换成"旁边有怪就跑"。
+     * 放在 tidyInventory 之前:保命优先于整理背包。
+     */
+    if (Date.now() < justDiedUntil) {
+      try {
+        const dd = nearestHostile()
+        if (dd && dd.dist < 8) {
+          if (Date.now() - lastRespawnFleeLog > 5000) {
+            lastRespawnFleeLog = Date.now()
+            log(`🏃 刚死过,${dd.name} 还在 ${Math.round(dd.dist)} 格 —— 满血也先跑,别在重生点挨第二刀`)
+          }
+          actFlee()
+        }
+      } catch (e) { log('重生后逃跑出错:', e.message) }
+    }
     tidyInventory().catch((e) => log('腾背包出错:', e.message))
+    // 🛡️ 护甲槽空着就把背包里最好的穿上(自带 30 秒节流,没得穿时开销可忽略)
+    wearBestArmor().catch((e) => log('穿盔甲出错:', e.message))
+    /*
+     * 🔬 放置能力探针的触发器:只在 ~/mcbot/PROBE_PLACE.on 存在时跑一次。
+     * 用标记文件而不是环境变量,是为了【不用重启就能触发】——
+     * 重启会打断它正在干的活,而探针本身只放 4 块泥土,没必要为它停机。
+     */
+    if (Date.now() - lastProbeCheckAt > 5000) {
+      lastProbeCheckAt = Date.now()
+      try {
+        if (!probePlaceDone && require('fs').existsSync(require('path').join(__dirname, 'PROBE_PLACE.on'))) {
+          probePlaceDone = true
+          runPlaceProbe().catch((e) => log('放置探针出错:', e.message))
+        }
+      } catch (e) { log('查探针标记出错:', e.message) }
+    }
     /*
      * 🕳️ 困在地下太久 → 直接传送回家(硬规则,不问大脑)。
      * 依据:实测一整轮 27 次决策【全部】在 y=41~45,坐标只在十几格内挪动 —— 它出不来。
@@ -3008,6 +3775,58 @@ async function brainTick() {
         (woodCount() >= 4 || countItem(/_planks$/) >= 4)) {
       forced = { action: 'build_base' }
       log(`战略规则:有木头 ${woodCount()} 块/木板 ${countItem(/_planks$/)} 个、还没有自己的箱子 → 回家造工作台和箱子(不问大脑)`)
+    }
+    /*
+     * 战略规则 2.5:背包满了、又没有杂物可扔 → 回家存箱子,不问大脑。
+     *
+     * 实测依据(2026-09-17 一夜):`🧹 背包 36 格全满、却没有可以扔的杂物` 出现 52 次。
+     * 背包满 = collectblock 在挖之前就抛 `no defined chest locations`,
+     * **每一次砍树都必然失败**(gather_wood 从 63% 掉回 41%)。
+     * 而 tidyInventory 只扔"对目标毫无用处"的东西,它身上塞的全是自己攒的家当(树苗/竹子/钻石/盔甲…),
+     * 一样都不该扔 —— 所以扔不动,只能存。
+     *
+     * 🔴 位置:排在吃饭(1.6)和打猎(1.7)【之后】,理由同盖房子那条 ——
+     *    forced 是单一插槽,把非保命的活排到吃饭前面就会重演"做木板做到饿死"。
+     * 🔴 门槛用【空格 ≤1】:留一格余量,别等到彻底满了才动身。
+     */
+    if (!forced && myChest && bot.entity && bot.inventory.emptySlotCount() <= 1 &&
+        bot.food !== undefined && bot.food >= 10 &&
+        Date.now() - lastForcedStoreAt > 120000) {
+      lastForcedStoreAt = Date.now()
+      forced = { action: 'store_items' }
+      log(`战略规则:背包只剩 ${bot.inventory.emptySlotCount()} 个空格、又没有杂物可扔 → 回家存箱子(不问大脑)`
+        + ` —— 不腾出格子的话,砍树会一次都成不了`)
+    }
+    /*
+     * 战略规则 3(Owner:「怎么造房子是他自己来决策啦 我非常期待小麦可以自己造出房子」):
+     * 有家了 + 不饿 + 血够 + 有够一种材料 20 块以上 + 房子还没盖完 → 回家砌墙,不问大脑。
+     *
+     * 🔴 位置很要紧:这条【排在吃饭(规则 1.6)和打猎(1.7)之后】。
+     *    依据是本文件里那条血的教训 —— forced 是单一插槽,craft 排在 eat 前面,
+     *    结果它"做木板做到饿死"(死亡追踪显示连续 90 秒在做 planks 直到 starved to death)。
+     *    盖房子比做木板更长,更不能抢在吃饭前面。
+     * 🔴 也不进决策菜单:实测真实提示打真网关,"空手"处境 6/6 选 craft stick、
+     *    build_house 0 次;本文件已有两个同类 0 采纳先例。靠结构,别靠叮嘱。
+     */
+    if (!forced && homePos && bot.entity && Date.now() >= buildPausedUntil &&
+        Date.now() >= buildHousePausedUntil &&
+        !(house && house.done) &&
+        bot.food !== undefined && bot.food >= 12 &&
+        bot.health !== undefined && bot.health >= 12 &&
+        Date.now() - lastHurtAt > 15000 &&
+        /*
+         * 材料门槛:【还没开工】要攒够 20 块(免得刚砌两块就断炊);
+         * 【已经开工】只要还有 1 块本房子的材料就继续 —— 也包括"其实已经砌完、
+         * 只是 done 标记还没翻过来"这一种:实测墙已经 22/22 被服务器确认,
+         * 但因为泥土用到只剩十几块,规则不再触发,done 就一直是 false、🎉 也打不出来。
+         */
+        (house
+          ? countItem(new RegExp('^' + house.material + '$')) >= 1
+          : bot.inventory.items().some((i) => /^(dirt|cobblestone|.*_planks|.*_log|stone|sand)$/.test(i.name) && i.count >= 20))) {
+      forced = { action: 'build_house' }
+      const m = bot.inventory.items().filter((i) => /^(dirt|cobblestone|.*_planks|.*_log|stone|sand)$/.test(i.name) && i.count >= 20)
+      log(`战略规则:血${bot.health} 食${bot.food} 都够、身上有 ${m.map((i) => i.name + '×' + i.count).join('、')}`
+        + ` → 回家盖房子(不问大脑)${house ? `,已砌到 ${houseBlocks(house).filter((p) => { const b = bot.blockAt(p); return b && b.name === house.material }).length}/${houseBlocks(house).length}` : ',还没开工'}`)
     }
     /*
      * 主脑(5060)不可用时降级到 M1 —— 理由见 brainDownUntil 的声明处。
@@ -4262,20 +5081,58 @@ function createBot() {
          *    这个方向的错误是可接受的 —— 漏记只是少一条日志,
          *    误记却会把假死亡点写进地图记忆和「过去的教训」,一路喂回给模型(已经污染过一次)。
          */
+        /*
+         * 🔴🔴 2026-09-17 06:4x 第三轮更正:把"满血满饱食"这一条【去掉】,只认服务器广播。
+         *
+         * 上面那段(收紧成 AND)的依据是「服务器 latest.log 里根本没有那两条广播」。
+         * **那个依据是错的** —— 我后来发现 `latest.js`… 准确说是 `logs/latest.log`
+         * 【漏记死亡约 5~10 倍】(控制台并不把每条死亡消息都写下来)。
+         * 所以当时判定的"幻影广播"很可能是【真死亡】,AND 是建在错前提上的。
+         *
+         * 这一轮的证据强得多 —— 同一个 34.7 分钟窗口三方对账:
+         *   服务器玩家统计(world/stats/<uuid>.json 的 minecraft:deaths)= **194**
+         *   机器人收到的死亡广播 [服务器判定死亡]                      = **194**   ← 精确相等
+         *   机器人真记账 ☠️我死了                                      = **4**
+         *   被当成误报丢掉                                             = **189**
+         * 也就是说:**广播是准的(1:1),坏的是我这道过滤,它把 97% 的真实死亡扔了。**
+         * 原因很直白:keepInventory 下瞬间重生,1.5 秒后读到的血量常是 16.33 而不是 20
+         *   (刚重生就被怪继续打),于是"满血满饱食"永远不成立。
+         *
+         * 🔴 去重窗口也从 30 秒压到 2 秒:夜里它每 10 秒就死一次,
+         *    30 秒的窗口本身就会吞掉三分之二的真实死亡。
+         *    2 秒只够挡住"同一条广播被重放"这种真重复。
+         *
+         * ⚠️ 留一个自检:如果以后广播数和统计文件又对不上,说明幻影广播是真的存在,
+         *    那时再加判据 —— 但【不要再用"满血满饱食"】,那一条已被证明会否掉真死亡。
+         */
         const byServer = Date.now() - lastDeathMsgAt < 8000
         const hp = bot && bot.health !== undefined ? bot.health : -1
         const fd = bot && bot.food !== undefined ? bot.food : -1
-        const respawned = hp >= 19.9 && fd >= 19.9
-        if (!byServer || !respawned) {
-          log(`↩️ 忽略一次疑似误报的死亡(血${hp} 食${fd};服务器广播=${byServer ? '有' : '无'}、满血满饱食=${respawned ? '是' : '否'},两者必须同时成立)`)
+        if (!byServer) {
+          log(`↩️ 忽略一次没有服务器广播的死亡事件(血${hp} 食${fd})—— 多半是 /home 传送下发的重生包`)
           return
         }
-        // 第三道:去重(理由见 lastAcceptedDeathAt 的声明处 —— 旧消息重放会骗过前两道)
-        if (Date.now() - lastAcceptedDeathAt < 30000) {
-          log(`↩️ 忽略一次疑似重复的死亡(距上一次判定只隔 ${Math.round((Date.now() - lastAcceptedDeathAt) / 1000)} 秒,多半是同一条广播被重放)`)
+        if (Date.now() - lastAcceptedDeathAt < 2000) {
+          log(`↩️ 忽略一次疑似重复的死亡(距上一次只隔 ${Date.now() - lastAcceptedDeathAt} 毫秒,同一条广播被重放)`)
           return
         }
         lastAcceptedDeathAt = Date.now()
+        /*
+         * 🔴 这次死亡是不是"刚传送回家就死"?连续两次就把家标记成暂时不安全。
+         * 20 秒的窗口:传送落地 + 僵尸走两步打死它,实测就是 6~10 秒一轮。
+         */
+        // 刚死过 12 秒内:旁边有怪就无条件先跑(见 justDiedUntil 的声明处)
+        justDiedUntil = Date.now() + 12000
+        if (Date.now() - lastHomeTpAt < 20000) {
+          homeDeathStreak++
+          if (homeDeathStreak >= 2 && Date.now() >= homeUnsafeUntil) {
+            homeUnsafeUntil = Date.now() + 300000
+            log(`🏚️ 连着 ${homeDeathStreak} 次【一回家就死】—— 家那边多半蹲着怪,`
+              + `接下来 5 分钟不回家,逃命改去出生点(这是为了打断死亡循环,不是永久放弃这个家)`)
+          }
+        } else {
+          homeDeathStreak = 0
+        }
         /*
          * 记下死亡地点,但**只作为事实**,不贴"危险"标签。
          * Owner:「死过的地方也不一定要绕开」—— 死在某处常常只是"当时天黑刚好刷了怪",
@@ -4283,7 +5140,7 @@ function createBot() {
          */
         try { if (p) places.remember('death', p) } catch (e) { /* 记地图失败不能影响重生流程 */ }
         const reason = `我死了:在 ${where},旁边有 ${killer}`
-        log(`☠️ ${reason}(${byServer ? '服务器已广播' : '按满血满饱食判定'})`)
+        log(`☠️ ${reason}(服务器已广播;血${hp} 食${fd})`)
         lastAction = 'died'
         lastOutcome = '失败:' + reason
         memory.record({ action: 'died', ok: false, reason, pos: p ? [Math.round(p.x), Math.round(p.z)] : null })
@@ -4327,5 +5184,6 @@ if (!CFG.password) {
   process.exit(1)
 }
 loadHome()     // 先读存档里的家,免得每次重启都重新安家
+loadHouse()    // 房子盖到一半重启也能接着盖
 forgetChestIfFarFromHome('启动时对账')   // 家和箱子对不上就先忘掉旧箱子,否则会卡死(见函数注释)
 createBot()

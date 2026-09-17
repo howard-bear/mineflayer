@@ -526,4 +526,55 @@ async function chat(who, what, situation, cfg, personaText) {
   return { say: t.slice(0, 40), give }
 }
 
-module.exports = { decide, plan, chat, ACTIONS, SYSTEM }
+/*
+ * 🏠 盖房子的【设计】交给模型 —— Owner 2026-09-17 原话:
+ *    「怎么造房子是他自己来决策啦 我非常期待小麦可以自己造出房子」。
+ *
+ * 分工和 chat() 的 give 字段是同一套(那次 Owner 纠正过我):
+ *   模型定:用什么材料、门朝哪边、盖多大 —— 这是人格和当下处境该起作用的地方。
+ *   代码定:几何和物理 —— 哪些格子要放、够不够得着、放不放得下、别人的地不能碰。
+ * 🔴 为什么不让模型自己算坐标:实测这类小模型"从固定菜单挑一个 + 输出严格 JSON"是可靠的(5/5),
+ *    但空间判断很差(explore 大量"只挪了 2~10 格")、游戏知识也常错。
+ *    让它吐坐标 = 把最不可靠的能力放在最关键的位置。
+ *
+ * ⚠️ 只给它【它真的有的材料】当选项 —— 不给它编的机会(结构化数据原样透传那条教训)。
+ */
+const HOUSE_SYSTEM = `你要给自己盖一间小房子。只输出 JSON,不要解释。
+
+格式:{"material":"材料名","door":"东|南|西|北","size":4}
+
+规则:
+- material 只能从【我有的材料】里挑一个,别的一律不认。
+- door 是门朝哪个方向开,只能写 东 南 西 北 四个字之一。
+- size 只能是 4 或 5(外框边长,格)。材料不够就挑 4。
+- 想好就直接给 JSON,不要写别的字。`
+
+/**
+ * 让模型定这间房子怎么盖。
+ * @returns {Promise<{material:string,door:string,size:number}|null>} 不合格一律 null(调用方用默认值兜底)
+ */
+async function designHouse(payload, cfg, personaText) {
+  let raw
+  try {
+    const persona = String(personaText || '').trim()
+    const sys = persona ? `【你的性格】\n${persona}\n\n${HOUSE_SYSTEM}` : HOUSE_SYSTEM
+    raw = await callModel(cfg, JSON.stringify(payload), sys, 80)
+  } catch (e) {
+    return null
+  }
+  const obj = extractJson(raw)
+  if (!obj) return null
+  // 🔴 材料必须在【调用方给的白名单】里 —— 它没有的东西一概不认,不给它编的机会
+  const allow = Array.isArray(payload['我有的材料']) ? payload['我有的材料'].map((s) => String(s).split(' ')[0]) : []
+  const mat = String(obj.material || '').trim()
+  if (!allow.includes(mat)) return null
+  const DIR = { '东': '东', '南': '南', '西': '西', '北': '北',
+    'east': '东', 'south': '南', 'west': '西', 'north': '北' }
+  const door = DIR[String(obj.door || '').trim().toLowerCase()] || DIR[String(obj.door || '').trim()]
+  if (!door) return null
+  const size = Math.floor(Number(obj.size))
+  if (size !== 4 && size !== 5) return null
+  return { material: mat, door, size }
+}
+
+module.exports = { decide, plan, chat, designHouse, ACTIONS, SYSTEM }
