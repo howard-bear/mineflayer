@@ -6,6 +6,47 @@
 set -u
 cd ~/mcbot || exit 1
 
+# ══════════════════════════════════════════════════════════════════
+# 🔒 部署互斥锁 —— 2026-09-17 补上,因为这件事真的发生过。
+#
+# 那天晚上有【两个 Claude 会话】同时在改同一个机器人(一个是另一个 fork 出来的),
+# 20:05 那次两边隔 **22 秒** 先后跑这个脚本 —— 只是运气好才没把对方的改动抹掉。
+# 这个脚本原来一个锁都没有:`mv -f _new_bot.js bot.real.js` 是无条件覆盖,
+# 谁最后跑谁赢,而且【没有任何痕迹】。
+#
+# 两道防护:
+#   ① flock:同一时刻只允许一个部署在跑(互斥)。
+#   ② EXPECT_MD5:可选的乐观并发检查 —— 调用方把"我读代码时的 md5"传进来,
+#      如果现在的文件已经不是那一份(说明别人在这中间部署过),就【拒绝】而不是覆盖。
+#      用法:EXPECT_MD5=<我读到的md5> bash ~/deploy_safe.sh
+#      不传就跳过这一检查(向后兼容,不破坏别人现有的用法)。
+# ══════════════════════════════════════════════════════════════════
+exec 9>/home/howard/.mcbot-deploy.lock
+if ! flock -n 9; then
+  echo "❌ 另一个部署正在进行中(锁文件 ~/.mcbot-deploy.lock)—— 本次中止。"
+  echo "   这不是错误,是防止两个会话互相覆盖。等对方跑完再来。"
+  echo "   想看是谁占着:fuser -v /home/howard/.mcbot-deploy.lock"
+  exit 1
+fi
+
+CUR_MD5=$(md5sum bot.real.js 2>/dev/null | cut -d' ' -f1)
+if [ -n "${EXPECT_MD5:-}" ] && [ "$EXPECT_MD5" != "$CUR_MD5" ]; then
+  echo "❌ 拒绝部署:现在的 bot.real.js 不是你读过的那一份。"
+  echo "   你以为是: $EXPECT_MD5"
+  echo "   实际是  : $CUR_MD5"
+  echo "   说明在你改代码的这段时间里【别人部署过】。"
+  echo "   👉 正确做法:重新把服务器上的 bot.real.js 拉下来,把你的改动重新打上去,再部署。"
+  echo "      不要直接覆盖 —— 那会抹掉对方的改动(2026-09-17 差点就这么发生了)。"
+  exit 1
+fi
+
+# 部署审计:谁、什么时候、从哪个 md5 换到哪个 md5。撞车了要能查。
+NEW_MD5=$(md5sum _new_bot.js 2>/dev/null | cut -d' ' -f1)
+printf '%s  user=%s  tty=%s  from=%s  to=%s\n' \
+  "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$(whoami)" "$(tty 2>/dev/null || echo '-')" \
+  "${CUR_MD5:0:12}" "${NEW_MD5:0:12}" >> /home/howard/deploy-audit.log
+echo "🔒 已取得部署锁;当前 ${CUR_MD5:0:12} → 将换成 ${NEW_MD5:0:12}(记录在 ~/deploy-audit.log)"
+
 echo "=== 1) 语法检查(不过就不放它出来）==="
 node --check _new_bot.js || { echo "   ❌ 语法错,中止,小麦继续停着"; exit 1; }
 echo "   ✅ OK"

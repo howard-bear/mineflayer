@@ -59,6 +59,27 @@ bot.emit('physicTick') // Deprecated, only exists to support old plugins.
 在字符串比较里永远大于 `2026-…`,于是整个文件的警告都漏了进来,
 被数成"122 次崩溃"。真实重启次数是 0(`systemctl show mcbot -p NRestarts` 说了算)。
 
+## 反作弊(GrimAC):一个有价值的**负**结果
+
+我们这台服务器**真的装着 GrimAC**,而且理论风险是实打实的:
+GitHub 上 **#3800 / #3791** 都报过 mineflayer 机器人被 Grim 的 `TickTimer` 检测踢掉 ——
+因为 mineflayer 从来不发那个收尾包。
+
+⚠️ 包名在 minecraft-data 1.21.4 里是 **`tick_end`**,不是社区里常写的 `client_tick_end`。
+**写错了不报错,只是永远不触发** —— 又一个"静默失效"。
+
+但在我们这台服上的实测是:
+
+```
+grep -i grim logs/latest.log                 → 28 行
+grep -i grim logs/latest.log | grep -c 机器人名  → 0
+```
+
+**反作弊从头到尾没管过这个机器人。** 跑了一整晚,零告警、零踢出。
+
+→ 结论要带条件:**理论风险真实存在,但在这套配置下没有发生。**
+别因为这段就以为"装了 Grim 就一定跑不了",也别因为没出事就以为它不存在。
+
 ## 一个还没解决的:`mineflayer-tool` 可能无限递归
 
 `collectblock` 依赖并自动加载 `mineflayer-tool`。
