@@ -31,10 +31,14 @@
 (直接问服务器会回用法串 `/claim [optional radius]`)。
 半径 5 就是 11×11 = 121 格,正好过 GP 的最小面积 100 格。
 
-> ⚠️ **但它一样要手持金铲子。** 实测服务器原话:
-> `You must be holding a golden shovel to do that.`
-> 也就是说金铲子不是"点角专用工具",而是**圈地这件事的通行证** ——
-> 命令式圈地也得拿着它。
+> ⚠️ **但【指定半径】就要手持金铲子。** `messages.yml` 里有一条专门为此存在的消息:
+> `RadiusRequiresGoldenShovel: You must be holding a golden shovel when specifying a radius.`
+> 实测也对得上:同一位置打 `/claim 5`,没铲子时连着 4 次被顶回
+> `You must be holding a golden shovel to do that.`,拿到铲子后立刻收到真正的圈地回执。
+>
+> 而**不带半径**的 `/claim` 不需要铲子 —— 它的半径直接取
+> `AutomaticNewPlayerClaimsRadius`(本服 = 4,也就是 9×9 = 81 格)。
+> 所以准确的说法是:**要自己定多大就得拿铲子,让插件替你定就不用。**
 新人一开始就送300格。
 ```
 
