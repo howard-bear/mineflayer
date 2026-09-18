@@ -275,7 +275,7 @@
 | J-M5-5 | 做 3 把备用木剑放进箱子 | M5-5 |  | take_from_chest(oak_planks×6、stick×3) → craft(wooden_sword×3) → store_items |
 | J-M7-3 | 麦豆跟着爸爸砍树 | M7-3 |  | follow_player(小麦) → gather_wood → store_items |
 | J-M7-3c | 麦豆在家附近砍树(只砍看得见的树,不去远处林子;离家 40 格内,照抄 child_play 的范围) | M7-3 | 麦豆 | gather_wood |
-| J-M7-3d | 麦豆背包满了自己回家存箱子(照抄 wife_store) | M7-3 | 麦豆 | go_home → store_items |
+| J-M7-3d | 麦豆身上有木头就回家存进箱子(照抄 wife_store;箱子满了被忘掉时「有箱子」变 0,不会反复空跑) | M7-3 | 麦豆 | go_home → store_items |
 | J-M7-4 | 没被点名时离真人太近就回家 | M7-4 |  | go_home |
 | J-M7-5 | 走到正在干活的家人旁边 4~8 格处，待着看。 | M7-5 | 麦豆 | goto_place(地方=家人身边（停在 4~8 格外，不进田里）) → idle(30 秒；跳过条件：离最近在干活的家人距离 ≥ 17) |
 | J-M8-1a | 用箱子里现成的铁锭做一把铁镐。 | M8-1 | 小麦 | go_home(跳过条件：离家距离 ≤ 8) → take_from_chest(东西=铁锭 3、木棍 2；跳过条件：背包铁锭 ≥ 3) → craft(东西=iron_pickaxe（要工作台）) |
