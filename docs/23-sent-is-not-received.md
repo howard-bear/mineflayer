@@ -149,4 +149,4 @@ except Exception:
 - 我没有读 `mc-rcon` 那个包装脚本的实现,只把它当成"已知能用"的对照组。
   **它为什么是对的,我没有核实过** —— 我只用了它的结果。
 
-版本:`Paper 1.21.4`(RCON `enable-rcon=true`,端口 25575)、`McAI 1.7.0`、Python 3 标准库 `socket`/`struct`。
+版本:`Paper 1.21.4`(RCON `enable-rcon=true`)、`McAI 1.7.0`、Python 3 标准库 `socket`/`struct`。
