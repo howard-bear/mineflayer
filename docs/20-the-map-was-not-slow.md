@@ -67,7 +67,7 @@ Cache-Control: public, max-age=86400
 
 ```nginx
 location ~ ^/maps/ {
-    proxy_pass http://127.0.0.1:8100;
+    proxy_pass http://127.0.0.1:<BlueMap 的本机端口>;
     ...
     proxy_hide_header Cache-Control;
     add_header Cache-Control "public, max-age=60" always;
