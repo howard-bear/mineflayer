@@ -14,7 +14,7 @@
 | 小目标 M | 57 |
 | 基本状态维持 A | 28 |
 | 思考触发 T | 9 |
-| 行为脚本 J(新写) | 132 |
+| 行为脚本 J(新写) | 133 |
 
 可行性(G/M/A/T):判据动作都缺 75,缺判据 23,现在就能做 2,缺判据/动作(代码刀) 2。
 缺的东西全部归并在文末「还缺的能力」—— 那就是接下来要写代码的清单。
@@ -38,11 +38,11 @@
 
 | 编号 | 说明 | 优先级 | 负责人 | 前置 | 完成标准 | 脚本 | 可行性 |
 |---|---|---|---|---|---|---|---|
-| M1-3 | 「收麦子 → 做面包 → 多出来的面包放进粮箱」这条路完整走通一圈：粮箱里至少有 3 个面包。 | 0 | 麦娘 | M1-2 | 有粮箱 ≥ 1 且 粮箱里的面包 ≥ 3 | J-M1-4, wife_bread, wife_craft_chest, wife_get_crop_chest, wife_store_crop | 缺判据 |
+| M1-3 | 「收麦子 → 做面包 → 多出来的面包放进粮箱」这条路完整走通一圈：粮箱里至少有 3 个面包。 | 0 | 麦娘 | M1-2 | 有粮箱 ≥ 1 且 粮箱里的面包 ≥ 3 | J-M1-4, wife_bread, wife_craft_chest, wife_get_crop_chest, wife_logs_to_planks, wife_store_crop | 缺判据 |
 | M1-4 | 收完的地不空着：最近一小时里，每一格收完或被踩坏的地都在 3 分钟内重新种上，身上常备够补一整块田的种子。 | 0 | 麦娘 | M1-2 | 补种最长等待秒数_新口径 ≤ 180 且 有种子 ≥ 9 | J-M1-2, J-M1-4, wife_find_seeds, wife_gather_seeds, wife_harvest, wife_plant | 缺判据 |
 | M1-8 | 田里熟了的麦子不放着：熟了就收，收完当场种回去，小麦和种子存进粮箱；麦豆在妈妈忙别的时帮她收。 | 0 | 麦娘, 麦豆 | M1-2 | 该收割了 = 0 | J-M1-4, J-M1-8, J-M1-8c, J-M1-8d, wife_harvest, wife_plant | 判据动作都缺 |
 | M1-0 | 先给麦田挑好地方：离出生点和别人的房子远一点、离家不太远、就挨着天然的河或湖，这样不用挖坑倒水。 | 1 | 小麦 | — | 有田址 = 1 且 田址离出生点 ≥ 48 且 田址离家 ≤ 96 且 田址16格内别人的方块 = 0 且 田址能浇到水的生土加自家耕地 ≥ 64 | J-M1-0 | 判据动作都缺 |
-| M1-1 | 麦娘手上有一把锄头、身上有至少 3 颗小麦种子，开第一块田的家伙齐了。 | 1 | 麦娘 | — | 有锄头 ≥ 1 且 有种子 ≥ 3 | wife_find_seeds, wife_gather_seeds, wife_make_hoe, wife_take_planks | 现在就能做 |
+| M1-1 | 麦娘手上有一把锄头、身上有至少 3 颗小麦种子，开第一块田的家伙齐了。 | 1 | 麦娘 | — | 有锄头 ≥ 1 且 有种子 ≥ 3 | wife_find_seeds, wife_gather_seeds, wife_logs_to_planks, wife_make_hoe, wife_take_planks | 现在就能做 |
 | M1-2 | 在选好的田址上开出第一块 9 格麦田：9 格都锄好、都种上麦子，一格不空。 | 1 | 麦娘 | M1-0, M1-1 | 耕好的地 ≥ 9 且 空着的耕地 = 0 | J-M1-2, wife_plant, wife_till | 判据动作都缺 |
 | M1-7 | 在田址里、水浇得到的地方把麦田扩到 64 格以上，全是湿地、几乎全种上：按估算这么大的田刚好够全家三口天天吃面包。 | 2 | 麦娘 | M1-4, M1-6 | 田格余量 ≥ 0 且 空着的耕地 ≤ 4 | J-M1-4, J-M1-7, J-M1-7b, wife_find_seeds, wife_gather_seeds | 判据动作都缺 |
 | M1-9 | 粮箱里的面包补到 18 个（够全家吃两天），被家人拿走就接着补。 | 2 | 麦娘 | M1-3 | 粮箱里的面包 ≥ 18 | J-M1-4, J-M1-9, wife_bread, wife_store_crop | 缺判据 |
@@ -317,6 +317,7 @@
 | think_house_design | 问模型选房子方案 | T4 |  | ask_model(代码列出的方案编号) |
 | think_pick_task | (已并入 J-T1-1)问模型给同档小目标排先后 | T1 |  | ask_model(同档候选编号;默认=最久没做的) |
 | think_reply | 被点名时写一句回话,并从 3 个选项里挑一个 | T2 |  | ask_model(回话 + 选项:只回话/跟他走/不理) → say(模型写的那句) → follow_player(只在选了「跟他走」时;最多 120 秒) |
+| wife_logs_to_planks | 麦娘从箱子拿原木做成 8 块同种木板(缺锄头或没地方存粮时) | M1-1 | 麦娘 | go_home → store_items → take_from_chest(原木) → craft(planks) → craft(planks) |
 | wife_make_iron_helmet | 麦娘用箱子里 5 个铁锭给自己做一个铁头盔 | M5-7 | 麦娘 | go_home → take_from_chest(铁锭) → craft(iron_helmet) |
 
 ## 六、还缺的能力(施工清单)
