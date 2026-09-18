@@ -7,9 +7,9 @@
 
 | 职业 | 登录名 | 中文名 | 会几个动作 | 数据目录 |
 |---|---|---|---|---|
-| `son` 丈夫 | XiaoMai | 小麦 | 18 | `~/mcbot/`(根目录) |
-| `wife` 妻子 | MaiNiang | 麦娘 | 9 | `~/mcbot/data/wife/` |
-| `child` 儿子 | MaiDou | 麦豆 | 6 | `~/mcbot/data/child/` |
+| `son` 丈夫 | XiaoMai | 小麦 | 19 | `~/mcbot/`(根目录) |
+| `wife` 妻子 | MaiNiang | 麦娘 | 15(含 6 个种地动作) | `~/mcbot/data/wife/` |
+| `child` 儿子 | MaiDou | 麦豆 | 6 | `~/mcbot/data/child/`(2026-09-18 上线) |
 
 > **为什么不复制成三份代码**:那几条护栏(不砍别人用原木盖的房子、只在家附近放方块、
 > 放方块总闸、不碰别人的箱子)是踩坑换来的。复制成三份就会分三份地腐烂,
