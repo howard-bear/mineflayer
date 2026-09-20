@@ -604,6 +604,37 @@ CoreProtect 逐格核对现存耕地:**zodiac_bear(Owner)73 格**、MaiNiang 81 
 
 ---
 
+## 2026-09-21 🐉 末影龙复活 + 后台「末影龙」页 + 暂时关掉反作弊(26.3 客户端) —— 00:0x~06:1x JST
+
+### ① 末影龙复活(Owner:「末地没人 复活吧 神龙」)
+- 先做了**末地单独备份** `/opt/minecraft/backups-manual/world_the_end-before-dragon-20260920-150306.tar.gz`(21MB)。
+- 插件 **YangTweaks 1.1.0** 加了 `/yangtweaks dragon [respawn [force]]`(走 Bukkit 的 `DragonBattle#initiateRespawn()`)。
+- **踩到两个坑,记下来**:
+  1. `initiateRespawn()` **不会自己变出水晶** —— 原版 `tryRespawn()` 要求出口传送门四周已经摆好 4 个末影水晶。
+     这台服的坐标实测:基岩框 y=64,水晶摆在 **y=65 的 (±2,0) / (0,±2)**。
+  2. **末地里没有人时,重生流程会冻在半路**(`重生阶段=START` 不动)—— 龙战只在有人在末地时才 tick;**强制加载区块没用**。
+     中途重启还会把重生阶段清回 NONE(这个状态不写盘)。
+- 结果:孩子们进末地后再触发一次,**PREPARING_TO_SUMMON_PILLARS → SUMMONING_PILLARS → 龙出现**,血量 200/200。
+- 清理:第二轮多摆的 4 个水晶已删(`minecraft:kill`,Essentials 会抢 `/kill`,**必须加 `minecraft:` 前缀**);末地的 forceload 已撤。
+
+### ② 后台新增「末影龙」页(Owner:「在后台管理页面也新增一个复活末影龙的界面」)
+- 新文件 `dragon.go` + `main.go` 三处接线(路由 2 条、模板 1 个、导航 1 项);地址 = 后台域名 + **`/dragon`**。
+- 页面显示:龙在不在、以前打死过没、重生阶段、外末地门数、**末地里现在有谁**;按钮会**自动摆 4 个水晶再触发**。
+- 末地有人时按钮变成「仍然复活」并二次确认(龙活着时出口传送门是关的);页面把那几条坑如实写在下面。
+- ⚠️ **后台源码原来只存在于 `/tmp/mcpanel-build`**(重启就没了)—— 已备份到 `~/mcpanel-src-backup/`。
+  改法:改源码 → `cd /tmp/mcpanel-build && go build -o /tmp/mc-panel-new .` → `install` 到 `/usr/local/bin/mc-panel` → `systemctl restart mc-panel`。
+  旧二进制备份 `mc-panel.bak-before-dragon-*`。
+
+### ③ 暂时关掉 GrimAC(Owner 选的)
+- 现象:Owner 客户端升到 **26.3** 后,鞘翅飞行中拉弓/吃东西就被踢,服务器日志 `[packetevents] Disconnected ... due to an invalid packet!`
+  `Failed to map the Packet ID 78 ... clientVersion: 26.2`。
+- 真因:GrimAC 2.3.74 里打包的 **PacketEvents 最高只认到 26.2**;上游 PacketEvents 09-19 才合并 26.3 支持,Grim 还没出带它的构建。
+- 处理:`grimac-bukkit-2.3.74-54a29a2.jar` 改名停用(`.disabled-26.3-20260920-152355`)并重启。**现在全服没有反作弊。**
+- **恢复条件**:GrimAC 出带 26.3 的构建 → 改回文件名(或装新版)重启。⚠️ nLogin 自带另一份 PacketEvents 2.13.0(同样只到 26.2),
+  如果 26.3 客户端仍被踢,要从它下手。
+
+---
+
 ## 2026-09-18 🏠 小麦的房子按 Owner 定的「就这样算盖完了」—— 19:15 JST 上线,19:33 判完工
 
 **问题**(fork 1 查的):屋顶那个 1×2 的洞 (-17,65,161)/(-17,65,162) 在别的玩家 **Bingolds 的领地**里,09-17 起服务器拒绝了 379 次。
