@@ -549,6 +549,27 @@ howard_bear 09-19 12:58 往箱子里放了一个 **warden_spawn_egg**。小麦�
 
 ---
 
+## 2026-09-20 🪶 新插件 YangTweaks:鞘翅不掉耐久 + 烟花用不完 —— 22:58 JST 上线
+
+**Owner**:「让游戏里的鞘翅的耐久变成不会消耗,然后烟花使用之后也不会消失,可以一直用」。
+
+**为什么要写插件**:这两件事原版和现有插件都没有开关;数据包也改不了「用掉就少一个」。所以做了一个很小的自有插件。
+
+**怎么做的**(`plugins/YangTweaks.jar`,源码在 `McServer/yangtweaks/`,和 McAI 一样【必须在 Mac 上编译】,服务器没有 javac):
+- **鞘翅**:拦 `PlayerItemDamageEvent`,物品是鞘翅就取消,并把已经掉的耐久补满(飞起来 1 秒内补上,旧鞘翅也等于修好)。
+- **烟花(飞行助推)**:Paper 的 `PlayerElytraBoostEvent.setShouldConsume(false)` —— 官方给的「这支别扣」开关。
+- **烟花(不在飞行时对空放)**:没有那个事件,原版直接扣。下一 tick 把手上那一格补回原数量,补的是**原来那一支的复制品**,
+  所以带颜色/效果的烟花不会变成白板;最后一支用掉时整支还回去。
+- 配置 `plugins/YangTweaks/config.yml`:`elytra-unbreakable` / `firework-infinite` 两个开关,`permission` 留空=所有人,
+  填权限名(如 `yangtweaks.use`)=只对被授权的人生效。改完 `/yangtweaks reload` 即生效,不用重启。
+
+**⚠️ 如实记**:装的时候服务器上有 6 个人在线(Owner、Bingolds、Little_love666 和三个机器人),重启前只在公屏喊了一声,
+下次这类改动应当先问一句再重启。
+
+**回滚**:删掉 `plugins/YangTweaks.jar` 重启即可(或把 config.yml 两个开关改成 false 后 `/yangtweaks reload`)。
+
+---
+
 ## 2026-09-18 🏠 小麦的房子按 Owner 定的「就这样算盖完了」—— 19:15 JST 上线,19:33 判完工
 
 **问题**(fork 1 查的):屋顶那个 1×2 的洞 (-17,65,161)/(-17,65,162) 在别的玩家 **Bingolds 的领地**里,09-17 起服务器拒绝了 379 次。
