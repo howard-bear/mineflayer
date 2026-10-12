@@ -16,6 +16,9 @@ v3.1(10-12 16:30):
     后台「画质」可切回「省网速」(= 不混色)。
   · 背面:Owner「讓這個屏幕的背面也同步播放吧 這樣兩邊都看得到」→ 墙背面挂 28 个普通画框,放和正面【同样编号】的地图(左右对调)。
     画面是按地图编号发的,所以背面和正面永远是同一帧,不多占网速/CPU,声音也只有一份。见 mirror_back()。
+v3.2(10-12 16:50):轮播片的文件名只由「哪几段、什么顺序、几遍」决定(声音只由这个决定)。改画质 / 每秒画面数 / 画面适配时
+  文件名不变 → 插件里的声音编号不变 → 玩家进服时拿到的声音包照样能用,不会因为调参数让大屏没声音到重启。
+  画面变了就同名原地重拼(先写临时文件再换名;插件开着的旧文件不受影响),reconcile 的记号里带画面版本号,所以会重新开播。
 停用:后台把「大屏开关」关掉;或 touch /var/lib/mc-cinema/OFF(这个只给维护用,后台看不到)。
 """
 import fcntl
@@ -306,7 +309,7 @@ def update_login_pack(name, audio, st):
     pname, sha1, n = build_login_pack([z])
     if server_pack()[1] != sha1:
         set_server_pack(pname, sha1)
-        save_status(st, f'进服声音包换成新的({n} 段声音,{os.path.getsize(os.path.join(PACK_DIR, pname)) // 1024} KB)—— 服务器重启后新视频才有声音')
+        save_status(st, f'轮播清单变了,进服声音包换成新的({n} 段声音,{os.path.getsize(os.path.join(PACK_DIR, pname)) // 1024} KB)—— 服务器重启之前大屏没有声音')
 
 
 # ---------------- 屏幕 ----------------
@@ -357,7 +360,7 @@ def reconcile(s, st, start):
             rcon(f'mcc stop {SCREEN}')
             save_status(st, '停播' + ('(大屏关了或清单是空的)' if not want else '(不在播放时段)'))
         return None
-    marker = f'{start}|{want}|{int(s["audio"])}|{s["quality"]}'
+    marker = f'{start}|{want}|{playlist_vkey(want)}|{int(s["audio"])}|{s["quality"]}'
     if running and video == want and read_text(ST + '/mounted') == marker:
         return want
     if mount(want, s, st):
@@ -542,16 +545,37 @@ def make_thumb(clip, cid, dur):
         os.remove(tmp)
 
 
+PL_NAMES = ST + '/playlist-names.json'       # {声音组合: 文件名}(永远留着:同样的组合永远同一个名字)
+PL_VKEYS = ST + '/playlist-vkeys.json'       # {文件名: 画面版本号}
+
+
+def playlist_vkey(name):
+    return read_json(PL_VKEYS, {}).get(name, '')
+
+
 def build_playlist(seq):
-    """seq:按顺序(含重复)的单段文件;同样的组合不重拼"""
-    h = hashlib.sha1('\n'.join(f'{p}:{os.path.getsize(p)}' for p in seq).encode()).hexdigest()[:10]
-    name = f'playlist-{h}.mp4'
+    """seq:按顺序(含重复)的 (段编号, 单段文件)。返回 (文件名, 这次有没有重拼)。
+    文件名由「段编号的顺序」决定 —— 声音只由它决定;改画质/每秒画面数/画面适配只换画面,名字不变,声音包继续能用。"""
+    akey = '\n'.join(cid for cid, _ in seq)
+    vkey = hashlib.sha1('\n'.join(f'{p}:{os.path.getsize(p)}' for _, p in seq).encode()).hexdigest()[:10]
+    names = read_json(PL_NAMES, None)
+    if names is None:
+        # 头一次用这套命名:v3 的旧名字就是「画面版本号」—— 现在这条轮播片要是和设置对得上,就继续用它(声音包不用换)
+        names = {}
+        old = f'playlist-{vkey}.mp4'
+        if os.path.exists(os.path.join(MEDIA, old)):
+            names[akey] = old
+            vk = read_json(PL_VKEYS, {})
+            vk[old] = vkey
+            write_json(PL_VKEYS, vk)
+        write_json(PL_NAMES, names)
+    name = names.get(akey) or f'playlist-{hashlib.sha1(akey.encode()).hexdigest()[:10]}.mp4'
     out = os.path.join(MEDIA, name)
-    if os.path.exists(out):
-        return name
+    if os.path.exists(out) and playlist_vkey(name) == vkey:
+        return name, False
     lst = CLIPS + '/concat.txt'
     with open(lst, 'w', encoding='utf-8') as f:
-        for p in seq:
+        for _, p in seq:
             f.write(f"file '{p}'\n")
     os.chmod(lst, 0o644)
     tmp = os.path.join(MEDIA, f'.{name}.tmp.mp4')
@@ -561,7 +585,13 @@ def build_playlist(seq):
     if p.returncode != 0:
         raise RuntimeError('拼轮播片失败:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:160])
     os.replace(tmp, out)
-    return name
+    names = read_json(PL_NAMES, {})
+    names[akey] = name
+    write_json(PL_NAMES, names)
+    vk = read_json(PL_VKEYS, {})
+    vk[name] = vkey
+    write_json(PL_VKEYS, {k: v for k, v in vk.items() if os.path.exists(os.path.join(MEDIA, k))})
+    return name, True
 
 
 def clip_path(it, fps):
@@ -626,10 +656,12 @@ def regen_once(st):
     for it in s['items']:
         c = st['clips'].get(it['id'], {})
         if it['enabled'] and c.get('state') == 'ok':
-            seq += [clip_path(it, fps)] * it['repeat']
+            seq += [(it['id'], clip_path(it, fps))] * it['repeat']
     if seq:
         try:
-            name = build_playlist(seq)
+            name, rebuilt = build_playlist(seq)
+            if rebuilt and read_text(ST + '/current') == name:
+                save_status(st, '轮播片的画面重新拼好了(声音没变,不用重启)')
             if read_text(ST + '/current') != name:
                 write_text(ST + '/current', name)
                 tot = sum(st['clips'][it['id']]['dur'] * it['repeat'] for it in s['items']
