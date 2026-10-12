@@ -4634,3 +4634,32 @@ sudo systemctl restart mcbot
 
 ### 回滚
 - `~/mcbot/bot.real.js.885519e5-before-v140-20261012`(只回 v140)、`bot.real.js.ce3aa128-before-v139-20261012`(两个都回)。
+
+---
+
+## 2026-10-12 15:00 JST 🎵 大屏背景音乐:游戏自带的唱片(Owner:「你說能不能用遊戲的八音盒啊 之類的來模擬出音效」→ 选了「第1種唱片音樂」)
+
+### 怎么放
+- 新数据包 `world/datapacks/yangcinema`(本仓库 `server/cinema/datapack/`):每个 tick 看离屏幕中心 (8,70,45) `range` 格以内的玩家,
+  谁这一首放完了(或还没放过)就给他放清单里的下一首:`playsound minecraft:music_disc.<名> record @s 8 70.5 45 <vol> 1`,并记下这一首还剩几 tick(`ycm_t`)、放到第几首(`ycm_i`)。
+  每个人走近就从一首的开头听起、放完自动接下一首;走远声音随距离变小(vol = 范围/8,声音传到 2×范围才消失)。
+- 曲目、范围、开关放在 `storage yangcinema:cfg`,由 `mc-cinema` 按后台设置写进去 —— 以后改设置不用 reload。唱片长度是从服务器 1.21.4 的 `jukebox_song` 数据里读的(每首后面空 2 秒)。
+- **大屏关着、没挂上、或者不在播放时段时不放**;关的那一刻正在听的人也停(只停屏幕附近的人)。
+- 用的是 `record`(唱片机/音符盒)音量:所有人的游戏里本来就有这些音乐,不用下载;玩家能在游戏设置里自己调这一档音量。
+
+### 后台「大屏」页 → 参数 → 🎵 背景音乐
+- 开/关;走到多少格以内开始放(16/24/32/48/64);19 张唱片勾选,标了作者、长度、风格。
+- 默认开、48 格、勾 13 首:Creator(八音盒版)、Creator、otherside、Pigstep、Relic、Precipice、cat、chirp、mall、wait、stal、strad、far;
+  blocks(太长)、mellohi/ward(有点怪)、13/11/5(恐怖氛围)默认不勾。
+
+### 顺带修的
+- 挂屏幕时「借机器人开始放屏幕」和「定位置」之间原来等 1 秒:14:34 Owner 第一次在后台上传时,第一次挂屏幕失败(插件:「No pending media selection」)、下一轮才挂上 ——
+  机器人那一秒里在挖东西,点方块把这次选择用掉了。现在两步紧挨着。
+
+### 实测
+- 数据包启用(`datapack list available` = 没有没启用的;计分项 `ycm_t`/`ycm_i` 建好了;`datapack list enabled` 的回话会被截断,看不全名单)。
+- storage:on=1b、13 首、范围 48、vol 6.0、第一首 `music_disc.creator_music_box`、1500 tick(73 秒 + 2 秒)。
+- 临时观察号(不注册)站在出生点、离屏幕 23 格:一进服就收到一个 `record` 类声音,位置正是 (8.5,70.5,45.5)、音量 6;它的计时器 8 秒后剩 1338 tick、放到第 1 首 —— 对得上。
+
+### 回滚
+- 只关音乐:后台「背景音乐」选「关」。整个拿掉:删 `world/datapacks/yangcinema` + `minecraft:reload`;后台换回 `/usr/local/bin/mc-panel.bak-cinema-v2-*`。

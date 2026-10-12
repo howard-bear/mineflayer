@@ -124,6 +124,14 @@ def load_settings():
                   'to': int((s.get('hours') or {}).get('to') or 0) % 24},
         'items': [],
     }
+    mu = s.get('music') or {}
+    tracks = []
+    for t in mu.get('tracks') or []:
+        tid = str(t.get('id', ''))
+        sec = float(t.get('sec') or 0)
+        if re.match(r'^[a-z0-9_]{1,24}$', tid) and 5 <= sec <= 1200:
+            tracks.append({'id': tid, 'sec': sec})
+    out['music'] = {'on': bool(mu.get('on')), 'range': min(64, max(8, int(mu.get('range') or 48))), 'tracks': tracks}
     for it in s.get('items') or []:
         if not ID_RE.match(str(it.get('id', ''))):
             continue
@@ -226,7 +234,7 @@ def mount(name, s, st):
         return False
     rcon(f'lp user {bot} permission settemp cineframe.use true 2m')
     rcon(f'essentials:sudo {bot} cineframe:media {name}')
-    time.sleep(1)
+    # 紧接着定位置:中间别停 —— 机器人在这期间点一下方块(挖东西)就会把这次「开始放屏幕」用掉(10-12 14:34 实测一次)
     out = rcon(f'cineframe:mediacorners {bot} {CORNERS}')
     time.sleep(5)
     rcon('cineframe:autoreplay on')
@@ -308,6 +316,31 @@ def screen_status(st, s, start, name):
     }
     st['cfg'] = {'fps': fps, 'range': rng, 'liveFps': lv.get('fps'), 'liveRange': lv.get('range'),
                  'pendingRestart': bool(start) and (lv.get('fps'), lv.get('range')) != (fps, rng)}
+
+
+# ---------------- 背景音乐(唱片,数据包 yangcinema 放) ----------------
+def music_apply(s, st, start, playing):
+    """把背景音乐设置写进游戏的 storage yangcinema:cfg。playing = 屏幕挂着并且在播放时段里。
+    vol = 范围/8:声音传到 2×范围 才消失(走近 range 格开始放,走远渐小);同样的设置这次启动已经写过就不再写。"""
+    m = s['music']
+    on = bool(m['on'] and m['tracks'] and playing)
+    rng = m['range']
+    tracks = ','.join(f"{{s:'minecraft:music_disc.{t['id']}',t:{int(t['sec'] * 20) + 40}}}" for t in m['tracks'])
+    snbt = f"{{on:{1 if on else 0}b,range:{rng},vol:{rng / 8:.1f}f,n:{len(m['tracks'])},tracks:[{tracks}]}}"
+    key = hashlib.sha1(f'{start}|{snbt}'.encode()).hexdigest()
+    if read_text(ST + '/music') == key:
+        return
+    out = rcon(f'data merge storage yangcinema:cfg {snbt}')
+    if 'Modified' not in out:
+        save_status(st, f'背景音乐设置没写进游戏:{out[:100]}')
+        return
+    if not on:                                                # 关掉时,正在听的人也停下
+        rcon(f'execute as @a[x=8,y=70,z=45,distance=..{rng * 2 + 16}] run stopsound @s record')
+        rcon('scoreboard players reset @a ycm_t')
+    write_text(ST + '/music', key)
+    st['music'] = {'on': on, 'n': len(m['tracks']), 'range': rng}
+    why = '' if on else ('(后台关着)' if not m['on'] else '(没选曲目)' if not m['tracks'] else '(大屏没在放或不在播放时段)')
+    save_status(st, f'背景音乐:{"开" if on else "关"}{why},{len(m["tracks"])} 首,走近 {rng} 格开始放')
 
 
 # ---------------- 转码 / 拼片 ----------------
@@ -495,6 +528,8 @@ def cmd_tick():
         subprocess.run(['systemctl', 'start', '--no-block', 'mc-cinema-regen.service'])
     start = server_start()
     name = reconcile(s, st, start, force=False) if start else None
+    if start:
+        music_apply(s, st, start, bool(name) and in_hours(s))
     screen_status(st, s, start, name)
     save_status(st)
 
@@ -516,6 +551,8 @@ def cmd_regen():
     start = server_start()
     name = reconcile(s, st, start, force=True) if start else None
     st['busy'] = False                                        # 屏幕换好了才算忙完(后台页面靠这个停止自动刷新)
+    if start:
+        music_apply(s, st, start, bool(name) and in_hours(s))
     ok, mid = mounted() if start else (True, None)
     keep = {read_text(ST + '/current')}
     if not ok:
