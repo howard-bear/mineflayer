@@ -1,0 +1,9 @@
+[Unit]
+Description=出生广场大屏:后台保存/上传完成后叫 mc-cinema regen
+
+[Path]
+PathModified=/var/lib/mc-panel/cinema/cinema.req
+Unit=mc-cinema-regen.service
+
+[Install]
+WantedBy=paths.target

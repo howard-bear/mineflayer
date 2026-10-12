@@ -1,7 +1,7 @@
 [Unit]
-Description=出生广场大屏:服务器启动后把屏幕挂上(每次启动一次)
+Description=出生广场大屏:服务器启动后挂屏幕、按播放时段开停(mc-cinema.timer 每 2 分钟)
 After=minecraft.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/mc-cinema-up
+ExecStart=/usr/local/sbin/mc-cinema tick

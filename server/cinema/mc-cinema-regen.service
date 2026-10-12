@@ -1,0 +1,11 @@
+[Unit]
+Description=出生广场大屏:转码新视频、拼轮播片、改参数、换屏幕
+After=minecraft.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mc-cinema regen
+TimeoutStartSec=4h
+Nice=10
+CPUQuota=200%
+IOSchedulingClass=idle

@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""出生广场大屏(CineFrame 插件)—— 后台「大屏」页的执行端(root 跑)。
+
+  mc-cinema tick    mc-cinema.timer 每 2 分钟:服务器启动后把屏幕挂上、按「播放时段」开停、换成最新的轮播片、写状态
+  mc-cinema regen   mc-cinema-regen.path(后台保存/上传完会碰 cinema.req):转码新视频、按顺序拼成一条轮播片、
+                    改每秒画面数/收画面范围、马上换屏幕
+
+为什么是「拼成一条片」:插件一块屏幕只能循环放一个文件;拼起来让它整条循环,
+没人在附近时插件自己暂停、有人来了自己接着播,这套逻辑不受影响。
+
+插件的几个脾气(2026-10-12 实测/读代码):
+  · 屏幕只存在内存,重启后墙上留着 28 个它不认得的旧画框 → 挂之前先清;
+  · 「开始放屏幕」只能由在线玩家发起 → 借一个 AI 机器人,临时给 2 分钟权限;
+  · 挂好后只放第一张当封面,要叫一次 play 才开始;
+  · 右键点画框会转 90° → 挂好就把 28 个画框钉死(Fixed);
+  · `cineframe:autoreplay on` 对已有屏幕原样不变、没有屏幕会答 No active displays → 当探针用。
+停用:后台把「大屏开关」关掉;或 touch /var/lib/mc-cinema/OFF(这个只给维护用,后台看不到)。
+"""
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+PANEL = '/var/lib/mc-panel/cinema'          # 后台(mcpanel 账号)可写:设置、上传、缩略图、状态
+SETTINGS = PANEL + '/cinema.json'
+STATUS = PANEL + '/status.json'
+UPLOADS = PANEL + '/uploads'
+THUMBS = PANEL + '/thumbs'
+ST = '/var/lib/mc-cinema'                    # 本程序自己的状态
+CLIPS = ST + '/clips'                        # 转好的单段(minecraft 账号写)
+MEDIA = '/opt/minecraft/plugins/CineFrame/media'
+CFG = '/opt/minecraft/plugins/CineFrame/config.yml'
+RCON = '/usr/local/bin/mc-rcon'
+LOCK = '/run/lock/mc-cinema.lock'
+
+W, H, SRC_FPS = 896, 512, 20                 # 屏幕 7×4 格,每格 128×128;片子统一 20 帧/秒
+MAX_DUR = 20 * 60                            # 单段最长用 20 分钟
+BOX = '@e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]'
+ITEMS_AROUND = '@e[type=item,x=3,y=60,z=42,dx=10,dy=15,dz=6]'
+CORNERS = '5 69 46 11 72 46 north'
+BOTS = ('XiaoMai', 'MaiNiang', 'MaiDou')
+FITS = {
+    'pad': f'scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black',
+    'crop': f'scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H}',
+    'stretch': f'scale={W}:{H}:flags=lanczos',
+}
+ID_RE = re.compile(r'^[0-9a-f]{16}$')
+AS_MC = ['setpriv', '--reuid=minecraft', '--regid=minecraft', '--clear-groups', 'nice', '-n', '15']
+
+
+# ---------------- 小工具 ----------------
+def now_hm():
+    return time.strftime('%m-%d %H:%M')
+
+
+def rcon(cmd):
+    try:
+        p = subprocess.run([RCON, cmd], capture_output=True, text=True, timeout=25)
+        return re.sub('§.', '', (p.stdout or '') + (p.stderr or '')).strip()
+    except Exception as e:
+        return f'(rcon 出错 {e})'
+
+
+def frames():
+    m = re.search(r'count: (\d+)', rcon(f'minecraft:execute if entity {BOX}'))
+    return int(m.group(1)) if m else 0
+
+
+def server_start():
+    """服务器在跑就返回这次启动的时刻(单调时钟 µs),没在跑返回 None"""
+    a = subprocess.run(['systemctl', 'is-active', 'minecraft'], capture_output=True, text=True).stdout.strip()
+    if a != 'active':
+        return None
+    v = subprocess.run(['systemctl', 'show', 'minecraft', '-p', 'ActiveEnterTimestampMonotonic', '--value'],
+                       capture_output=True, text=True).stdout.strip()
+    return int(v) if v.isdigit() else None
+
+
+def read_json(p, default):
+    try:
+        with open(p, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def write_json(p, obj, mode=0o644):
+    tmp = p + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=1)
+    os.chmod(tmp, mode)
+    os.replace(tmp, p)
+
+
+def read_text(p, default=''):
+    try:
+        with open(p, encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception:
+        return default
+
+
+def write_text(p, s):
+    with open(p + '.tmp', 'w', encoding='utf-8') as f:
+        f.write(s + '\n')
+    os.replace(p + '.tmp', p)
+
+
+# ---------------- 设置 ----------------
+def load_settings():
+    s = read_json(SETTINGS, {})
+    out = {
+        'rev': int(s.get('rev') or 0),
+        'enabled': bool(s.get('enabled', True)),
+        'fps': min(20, max(1, int(s.get('fps') or 10))),
+        'range': min(128, max(16, int(s.get('range') or 48))),
+        'hours': {'on': bool((s.get('hours') or {}).get('on')),
+                  'from': int((s.get('hours') or {}).get('from') or 0) % 24,
+                  'to': int((s.get('hours') or {}).get('to') or 0) % 24},
+        'items': [],
+    }
+    for it in s.get('items') or []:
+        if not ID_RE.match(str(it.get('id', ''))):
+            continue
+        out['items'].append({
+            'id': it['id'],
+            'title': str(it.get('title') or '')[:60],
+            'enabled': bool(it.get('enabled', True)),
+            'repeat': min(10, max(1, int(it.get('repeat') or 1))),
+            'fit': it.get('fit') if it.get('fit') in FITS else 'pad',
+        })
+    return out
+
+
+def in_hours(s):
+    h = s['hours']
+    if not h['on'] or h['from'] == h['to']:
+        return True
+    hr = time.localtime().tm_hour
+    if h['from'] < h['to']:
+        return h['from'] <= hr < h['to']
+    return hr >= h['from'] or hr < h['to']
+
+
+# ---------------- 状态(给后台看) ----------------
+def load_status():
+    st = read_json(STATUS, {})
+    st.setdefault('clips', {})
+    st.setdefault('log', [])
+    return st
+
+
+def save_status(st, msg=None):
+    if msg:
+        st['log'] = (st.get('log') or [])[-29:] + [f'{now_hm()} {msg}']
+        print(msg, flush=True)
+    st['updated'] = int(time.time())
+    write_json(STATUS, st)
+
+
+# ---------------- 插件配置(每秒画面数 / 收画面范围,要重启服务器才生效) ----------------
+def cfg_values():
+    t = read_text(CFG)
+    f = re.search(r'^cineframe-map-fps:\s*(\d+)', t, re.M)
+    r = re.search(r'^cineframe-packet-range-blocks:\s*(\d+)', t, re.M)
+    return (int(f.group(1)) if f else None, int(r.group(1)) if r else None)
+
+
+def cfg_apply(fps, rng):
+    with open(CFG, 'r+', encoding='utf-8') as f:            # 原地改(不换文件、不改属主)
+        t = f.read()
+        t2 = re.sub(r'^(cineframe-map-fps:\s*)\d+', rf'\g<1>{fps}', t, flags=re.M)
+        t2 = re.sub(r'^(cineframe-packet-range-blocks:\s*)\d+', rf'\g<1>{rng}', t2, flags=re.M)
+        if t2 != t:
+            f.seek(0)
+            f.write(t2)
+            f.truncate()
+            return True
+    return False
+
+
+def live_values(start):
+    """这次服务器启动时插件读到的值:每次新启动的第一次 tick 记一份"""
+    lv = read_json(ST + '/live.json', {})
+    if start and lv.get('start') != start:
+        fps, rng = cfg_values()
+        lv = {'start': start, 'fps': fps, 'range': rng}
+        write_json(ST + '/live.json', lv)
+    return lv
+
+
+# ---------------- 屏幕 ----------------
+def mounted():
+    """问插件现在挂着哪块屏幕 → (问到了没有, 屏幕 id 或 None)
+    id 形如 playlist-xx.mp4@world,5,69,46-11,72,46。问不到(服务器没回话)时绝不能当成「没屏幕」去动它。"""
+    out = rcon('cineframe:autoreplay on')
+    if 'No active displays' in out:
+        return True, None
+    m = re.search(r'Auto replay for (\S+@\S+?): ON', out)
+    return (True, m.group(1)) if m else (False, out[:100])
+
+
+def unmount(mid):
+    if mid:
+        rcon(f'cineframe:delmedia {mid}')
+        time.sleep(2)
+    if frames():
+        rcon(f'minecraft:kill {BOX}')
+        rcon(f'minecraft:kill {ITEMS_AROUND}')
+
+
+def mount(name, s, st):
+    n = frames()
+    if n:
+        rcon(f'minecraft:kill {BOX}')
+        rcon(f'minecraft:kill {ITEMS_AROUND}')
+    lst = rcon('minecraft:list')
+    bot = next((b for b in BOTS if re.search(rf'\b{b}\b', lst)), None)
+    if not bot:
+        save_status(st, '三个机器人都不在线,屏幕等下次再挂')
+        return False
+    rcon(f'lp user {bot} permission settemp cineframe.use true 2m')
+    rcon(f'essentials:sudo {bot} cineframe:media {name}')
+    time.sleep(1)
+    out = rcon(f'cineframe:mediacorners {bot} {CORNERS}')
+    time.sleep(5)
+    rcon('cineframe:autoreplay on')
+    if in_hours(s):
+        rcon('cineframe:play')
+        write_text(ST + '/sched', 'playing')
+    else:
+        write_text(ST + '/sched', 'paused')
+    rcon(f'minecraft:execute as {BOX} run data merge entity @s {{ItemRotation:0b,Fixed:1b}}')
+    rcon(f'lp user {bot} permission unsettemp cineframe.use')
+    n = frames()
+    ok = n == 28
+    save_status(st, f'挂屏幕 {name}(借 {bot}):{"成功,28 个画框" if ok else f"没挂成,画框 {n} 个;插件回话 {out[:80]}"}')
+    return ok
+
+
+def want_name(s):
+    """应该放哪个文件:设置开着、清单不空才有"""
+    if not s['enabled'] or os.path.exists(ST + '/OFF'):
+        return None
+    cur = read_text(ST + '/current')
+    if cur and os.path.exists(os.path.join(MEDIA, cur)):
+        return cur
+    return None
+
+
+def sched_check(s, st):
+    """已挂着:按播放时段开停(只在进出时段那一刻下命令)"""
+    sched = read_text(ST + '/sched', 'playing')
+    if in_hours(s) and sched == 'paused':
+        rcon('cineframe:play')
+        write_text(ST + '/sched', 'playing')
+        save_status(st, '到了播放时段,开始播放')
+    elif not in_hours(s) and sched != 'paused':
+        rcon('cineframe:pause')
+        write_text(ST + '/sched', 'paused')
+        save_status(st, '出了播放时段,暂停')
+
+
+def reconcile(s, st, start, force):
+    """让墙上的屏幕和设置一致;返回现在挂着的文件名。
+    这次启动已经对上过(记号 mounted = 启动时刻|文件名)且不是 force,就只管播放时段、不去问插件。"""
+    want = want_name(s)
+    marker = f'{start}|{want or ""}'
+    if not force and read_text(ST + '/mounted') == marker:
+        if want:
+            sched_check(s, st)
+        return want
+    ok, mid = mounted()
+    if not ok:
+        save_status(st, f'问插件没得到回话,这次不动屏幕:{mid}')
+        return None
+    if mid and (not want or not mid.startswith(want + '@')):
+        unmount(mid)
+        save_status(st, f'拿掉屏幕 {mid.split("@")[0]}' + ('' if want else '(大屏关了或清单是空的)'))
+        mid = None
+    if not want:
+        if frames():
+            unmount(None)
+        write_text(ST + '/mounted', marker)
+        return None
+    if not mid:
+        if (time.monotonic() * 1e6 - start) < 90e6:
+            return None                                       # 刚启动,机器人还没回来
+        if not mount(want, s, st):
+            return None
+    else:
+        sched_check(s, st)
+    write_text(ST + '/mounted', marker)
+    return want
+
+
+def screen_status(st, s, start, name):
+    fps, rng = cfg_values()
+    lv = live_values(start) if start else {}
+    st['screen'] = {
+        'server': bool(start), 'mounted': name or '', 'enabled': s['enabled'],
+        'inHours': in_hours(s), 'checked': int(time.time()),
+    }
+    st['cfg'] = {'fps': fps, 'range': rng, 'liveFps': lv.get('fps'), 'liveRange': lv.get('range'),
+                 'pendingRestart': bool(start) and (lv.get('fps'), lv.get('range')) != (fps, rng)}
+
+
+# ---------------- 转码 / 拼片 ----------------
+def probe(path, as_mc=True):
+    cmd = (AS_MC if as_mc else []) + ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                                      '-show_entries', 'stream=width,height,codec_name:format=duration',
+                                      '-of', 'json', path]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise RuntimeError('认不出这个视频:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:120])
+    j = json.loads(p.stdout or '{}')
+    if not j.get('streams'):
+        raise RuntimeError('文件里没有画面(可能是纯音频或者坏文件)')
+    v = j['streams'][0]
+    dur = float((j.get('format') or {}).get('duration') or 0)
+    return {'w': v.get('width'), 'h': v.get('height'), 'codec': v.get('codec_name'), 'dur': round(dur, 1)}
+
+
+def transcode(src, out, fit, total, st, cid):
+    tmp = out + '.tmp.mp4'
+    vf = FITS[fit] + f',setsar=1,fps={SRC_FPS},format=yuv420p'
+    cmd = AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', src,
+                   '-map', '0:v:0', '-an', '-sn', '-dn', '-t', str(MAX_DUR), '-vf', vf,
+                   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-profile:v', 'high', '-level', '4.0',
+                   '-g', '40', '-keyint_min', '40', '-sc_threshold', '0', '-fps_mode', 'cfr', '-r', str(SRC_FPS),
+                   '-video_track_timescale', '20480', '-threads', '2', '-movflags', '+faststart',
+                   '-progress', 'pipe:1', '-nostats', tmp]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    last = 0
+    for line in p.stdout:
+        if line.startswith('out_time_us=') and total:
+            try:
+                pct = min(99, int(int(line.split('=')[1]) / 1e6 / min(total, MAX_DUR) * 100))
+            except ValueError:
+                continue
+            if time.time() - last > 3:
+                st['clips'].setdefault(cid, {})['pct'] = pct
+                save_status(st)
+                last = time.time()
+    err = p.stderr.read()
+    if p.wait() != 0:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise RuntimeError('转换失败:' + (err.strip().splitlines() or ['未知原因'])[-1][:160])
+    os.replace(tmp, out)
+
+
+def make_thumb(clip, cid, dur):
+    tmp = CLIPS + f'/.thumb-{cid}.jpg'
+    t = f'{min(15.0, dur * 0.3):.1f}'                     # 片头常是黑的(宣传片就是),取 30% 处
+    subprocess.run(AS_MC + ['ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-ss', t, '-i', clip,
+                            '-frames:v', '1', '-vf', 'scale=224:128', '-q:v', '4', tmp], timeout=120)
+    if os.path.exists(tmp):
+        shutil.copyfile(tmp, THUMBS + f'/{cid}.jpg')
+        os.chmod(THUMBS + f'/{cid}.jpg', 0o644)
+        os.remove(tmp)
+
+
+def build_playlist(seq):
+    """seq:按顺序(含重复)的单段文件;同样的组合不重拼"""
+    h = hashlib.sha1('\n'.join(f'{p}:{os.path.getsize(p)}' for p in seq).encode()).hexdigest()[:10]
+    name = f'playlist-{h}.mp4'
+    out = os.path.join(MEDIA, name)
+    if os.path.exists(out):
+        return name
+    lst = CLIPS + '/concat.txt'
+    with open(lst, 'w', encoding='utf-8') as f:
+        for p in seq:
+            f.write(f"file '{p}'\n")
+    os.chmod(lst, 0o644)
+    tmp = os.path.join(MEDIA, f'.{name}.tmp.mp4')
+    p = subprocess.run(AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat',
+                                '-safe', '0', '-i', lst, '-c', 'copy', '-movflags', '+faststart', tmp],
+                       capture_output=True, text=True, timeout=1800)
+    if p.returncode != 0:
+        raise RuntimeError('拼轮播片失败:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:160])
+    os.replace(tmp, out)
+    return name
+
+
+def regen_once(st):
+    s = load_settings()
+    known = {it['id'] for it in s['items']}
+    # ① 每段转成屏幕尺寸(换了「画面适配」就重转)
+    for it in s['items']:
+        cid = it['id']
+        src = f'{UPLOADS}/{cid}.src'
+        clip = f'{CLIPS}/{cid}-{it["fit"]}.mp4'
+        c = st['clips'].setdefault(cid, {})
+        if not os.path.exists(src):
+            c.update(state='error', err='原文件不见了(上传没完成?)请删掉重新上传')
+            continue
+        if os.path.exists(clip) and c.get('state') == 'ok' and c.get('fit') == it['fit']:
+            if not os.path.exists(f'{THUMBS}/{cid}.jpg'):
+                make_thumb(clip, cid, c.get('dur') or 0)      # 缩略图丢了就补一张
+            continue
+        srcm = int(os.path.getmtime(src))
+        if c.get('state') == 'error' and c.get('errKey') == f'{srcm}-{it["fit"]}':
+            continue                                          # 同一个文件、同一种适配已经失败过,不白转
+        try:
+            c.update(state='processing', pct=0, err='')
+            save_status(st, f'开始处理「{it["title"]}」')
+            info = probe(src)
+            c['src'] = info
+            transcode(src, clip, it['fit'], info['dur'], st, cid)
+            d = probe(clip)['dur']
+            make_thumb(clip, cid, d)
+            c.update(state='ok', dur=d, fit=it['fit'], pct=100,
+                     cut=bool(info['dur'] > MAX_DUR + 1))
+            save_status(st, f'处理好了「{it["title"]}」:{int(d // 60)} 分 {int(d % 60)} 秒')
+        except Exception as e:
+            c.update(state='error', err=str(e)[:200], errKey=f'{srcm}-{it["fit"]}')
+            save_status(st, f'「{it["title"]}」处理失败:{e}')
+    # ② 清掉删掉的
+    for cid in list(st['clips']):
+        if cid not in known:
+            st['clips'].pop(cid, None)
+    for p in os.listdir(CLIPS):
+        m = re.match(r'^([0-9a-f]{16})-(\w+)\.mp4$', p)
+        if m and not any(it['id'] == m.group(1) and it['fit'] == m.group(2) for it in s['items']):
+            os.remove(os.path.join(CLIPS, p))
+    for p in os.listdir(THUMBS):
+        if p.endswith('.jpg') and p[:-4] not in known:
+            os.remove(os.path.join(THUMBS, p))
+    for p in os.listdir(UPLOADS):
+        full = os.path.join(UPLOADS, p)
+        cid = p.split('.')[0]
+        age = time.time() - os.path.getmtime(full)
+        if p.endswith('.part') and age > 86400:
+            os.remove(full)                                    # 一天都没传完的半截
+        elif (p.endswith('.src') or p.endswith('.json')) and cid not in known and age > 3600:
+            os.remove(full)                                    # 后台删掉的(留 1 小时防误删刚传完的)
+    # ③ 按顺序拼成一条
+    seq = []
+    for it in s['items']:
+        c = st['clips'].get(it['id'], {})
+        if it['enabled'] and c.get('state') == 'ok':
+            seq += [f'{CLIPS}/{it["id"]}-{it["fit"]}.mp4'] * it['repeat']
+    if seq:
+        try:
+            name = build_playlist(seq)
+            if read_text(ST + '/current') != name:
+                write_text(ST + '/current', name)
+                tot = sum(st['clips'][it['id']]['dur'] * it['repeat'] for it in s['items']
+                          if it['enabled'] and st['clips'].get(it['id'], {}).get('state') == 'ok')
+                st['playlist'] = {'file': name, 'dur': round(tot, 1), 'count': len(seq), 'built': int(time.time())}
+                save_status(st, f'轮播片拼好:{len(seq)} 段,共 {int(tot // 60)} 分 {int(tot % 60)} 秒')
+        except Exception as e:
+            save_status(st, str(e))
+    else:
+        if read_text(ST + '/current'):
+            write_text(ST + '/current', '')
+        st['playlist'] = {'file': '', 'dur': 0, 'count': 0, 'built': int(time.time())}
+    # ④ 每秒画面数 / 收画面范围
+    if cfg_apply(s['fps'], s['range']):
+        lv = read_json(ST + '/live.json', {})
+        if (lv.get('fps'), lv.get('range')) == (s['fps'], s['range']):
+            save_status(st, f'每秒画面数 {s["fps"]}、收画面范围 {s["range"]} 格:和现在实际生效的一样,不用重启')
+        else:
+            save_status(st, f'每秒画面数 {s["fps"]}、收画面范围 {s["range"]} 格已写入,要重启服务器才生效')
+    return s
+
+
+def cleanup_media(keep):
+    if keep is None:
+        return
+    for p in os.listdir(MEDIA):
+        if re.match(r'^playlist-[0-9a-f]{10}\.mp4$', p) and p not in keep:
+            os.remove(os.path.join(MEDIA, p))
+
+
+# ---------------- 两个入口 ----------------
+def cmd_tick():
+    lk = open(LOCK, 'w')
+    try:
+        fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return                                                # 正在转码/换片,这轮不碰
+    st = load_status()
+    s = load_settings()
+    if str(s['rev']) != read_text(ST + '/rev'):
+        # 后台保存时 regen 正好在忙,那次通知被吞了 → 补叫一次(regen 自己会处理到最新版本)
+        subprocess.run(['systemctl', 'start', '--no-block', 'mc-cinema-regen.service'])
+    start = server_start()
+    name = reconcile(s, st, start, force=False) if start else None
+    screen_status(st, s, start, name)
+    save_status(st)
+
+
+def cmd_regen():
+    lk = open(LOCK, 'w')
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    st = load_status()
+    st['busy'] = True
+    save_status(st)
+    done_rev = None
+    for _ in range(5):                                        # 处理中又保存了一次 → 再来一轮
+        s = load_settings()
+        if s['rev'] == done_rev:
+            break
+        s = regen_once(st)
+        done_rev = s['rev']
+        write_text(ST + '/rev', str(done_rev))
+    start = server_start()
+    name = reconcile(s, st, start, force=True) if start else None
+    st['busy'] = False                                        # 屏幕换好了才算忙完(后台页面靠这个停止自动刷新)
+    ok, mid = mounted() if start else (True, None)
+    keep = {read_text(ST + '/current')}
+    if not ok:
+        keep = None                                           # 问不到插件 → 这次不删任何轮播片
+    elif mid:
+        keep.add(mid.split('@')[0])
+    cleanup_media(keep)
+    screen_status(st, s, start, name)
+    save_status(st)
+
+
+if __name__ == '__main__':
+    os.makedirs(CLIPS, exist_ok=True)
+    {'tick': cmd_tick, 'regen': cmd_regen}.get(sys.argv[1] if len(sys.argv) > 1 else '', lambda: sys.exit('用法:mc-cinema tick|regen'))()
