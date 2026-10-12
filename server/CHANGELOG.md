@@ -4558,3 +4558,8 @@ sudo systemctl restart mcbot
 ### 回滚
 - 只停屏幕:`touch /var/lib/mc-cinema/OFF`,再 `cineframe:delmedia trailer.mp4@world,5,69,46-11,72,46`(或下次重启后自然没有,旧画框要 `minecraft:kill @e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]`)。
 - 整个拿掉:`systemctl disable --now mc-cinema.timer`,删 `plugins/CineFrame-1.21.11-yy.jar`、`plugins/packetevents-spigot-2.11.2.jar`、`plugins/CineFrame/`,重启;方块(只拆我放的,别整片清空 —— x8..12 y64 那排沙子本来就在):`fill 4 68 46 12 73 46 air` + `fill 4 64 46 4 67 46 air` + `fill 12 65 46 12 67 46 air` + `fill 5 69 44 11 72 44 air replace light`。
+
+### 13:50 JST 追加修正(Owner 在游戏里看:「這個平面是黑的沒有畫面」「第四行左數第三個方塊的畫面上下顛倒了」)
+- **黑屏**:插件挂好屏幕后只放第一张画面当封面、要有人下「播放」才开始;宣传片第一张是全黑的。我前面的实测是因为手动「暂停→播放」过才有画面,没发现这一点。之后没人在附近它自己暂停、有人来了自己接着播(看过插件代码),所以只缺开头那一声。`mc-cinema-up` 挂好后加 `cineframe:play`。手动 play 后服务器发给 Owner 的数据从 7 KB/秒 变 580 KB/秒。
+- **一块上下颠倒**:底下一排左数第三个画框 `ItemRotation` 被点成 2(右键点地图画框会转 90°,点两下 = 180°),其余 27 个是 0。改回 0,并把 28 个画框都设 `Fixed:1b`(谁都转不动、拿不下);`mc-cinema-up` 挂好后也会做这一步。
+- 13:47 再重启实测:约 2 分钟自动挂回、自动播放、28 个画框全是角度 0 + 钉死;观察号一进来就收到每秒约 270 个画面包(不用任何人手动播放)。
