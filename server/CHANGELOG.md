@@ -4542,7 +4542,7 @@ sudo systemctl restart mcbot
 - 插件:`plugins/packetevents-spigot-2.11.2.jar`(Modrinth 官方,sha1 `9762b404…`,选和 CineFrame 同期的版本)、`plugins/CineFrame-1.21.11-yy.jar`(Modrinth 原件 sha1 `321ebe04…`,只改了 plugin.yml 两处)。
 - `plugins/CineFrame/`:`config.yml`(收画面范围 64→**48 格**、每秒 **10** 张画面)、`media/trailer.mp4`(官方宣传片「Official Minecraft Trailer」1 分钟,转成 896×512、无声)、`ffmpeg`(Debian 官方 7.1.5 复制进来)。插件启动时自己从作者网站下了一个 16 MB 的颜色对照表 `rgb_to_map.bin`(数据文件)。
 - 系统:`apt install ffmpeg`。
-- 方块(出生点金字塔正南、池塘南岸沙丘,管理员保护区 #1 里):磨制黑石墙 x4..12 y68..73 z46(54 块)、两根磨制黑石墙柱 x4 / x12 y64..67(4+3 块,x12 y64 原来是沙子)、屏幕前一排看不见的光源 x5..11 y69..72 z44(28 块,晚上画面也亮)。屏幕 **7 格宽 × 4 格高**,朝北对着出生点,画框挂在 z45。从出生点草坪看越过池塘边那棵小树。
+- 方块(出生点金字塔正南、池塘南岸沙丘,管理员保护区 #1 里):磨制黑石墙 x4..12 y68..73 z46(54 块)、两根磨制黑石墙柱 x4 y64..67(4 块)、x12 y65..67(3 块,脚下 y64 本来就是沙子、没动)、屏幕前一排看不见的光源 x5..11 y69..72 z44(28 块,晚上画面也亮)。屏幕 **7 格宽 × 4 格高**,朝北对着出生点,画框挂在 z45。从出生点草坪看越过池塘边那棵小树。
 - 自动挂屏幕:`/usr/local/sbin/mc-cinema-up` + `mc-cinema.timer`(每 2 分钟看一眼,文件在本仓库 `server/cinema/`)。每次服务器启动后:先问插件有没有屏幕 → 没有就清掉旧画框 → 等 90 秒、借一个在线的 AI 机器人(插件规定「开始放屏幕」必须由在线玩家发起,临时给它 2 分钟权限)放屏幕 → 打开循环 → 核对 28 个画框后记下「这次启动挂好了」。
 
 ### 实测(13:17~13:30)
@@ -4557,4 +4557,4 @@ sudo systemctl restart mcbot
 
 ### 回滚
 - 只停屏幕:`touch /var/lib/mc-cinema/OFF`,再 `cineframe:delmedia trailer.mp4@world,5,69,46-11,72,46`(或下次重启后自然没有,旧画框要 `minecraft:kill @e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]`)。
-- 整个拿掉:`systemctl disable --now mc-cinema.timer`,删 `plugins/CineFrame-1.21.11-yy.jar`、`plugins/packetevents-spigot-2.11.2.jar`、`plugins/CineFrame/`,重启;方块:`fill 4 64 46 12 73 46 air` + `setblock 12 64 46 sand` + `fill 5 69 44 11 72 44 air replace light`。
+- 整个拿掉:`systemctl disable --now mc-cinema.timer`,删 `plugins/CineFrame-1.21.11-yy.jar`、`plugins/packetevents-spigot-2.11.2.jar`、`plugins/CineFrame/`,重启;方块(只拆我放的,别整片清空 —— x8..12 y64 那排沙子本来就在):`fill 4 68 46 12 73 46 air` + `fill 4 64 46 4 67 46 air` + `fill 12 65 46 12 67 46 air` + `fill 5 69 44 11 72 44 air replace light`。
