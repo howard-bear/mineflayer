@@ -4523,3 +4523,38 @@ sudo systemctl restart mcbot
 
 ### 版本 / 回滚
 - `bot.real.js`:v137 `3f456d5a` → **v138 `ce3aa128`**(备份 `~/mcbot/bot.real.js.3f456d5a-before-v138-20261012`)。
+
+---
+
+## 2026-10-12 13:30 JST 📺 出生广场大屏:循环放 Minecraft 宣传片(Owner:「有没有可能在出生的广场上做一个大型显示器,播放视频」→「先试试,现在可以直接重启服务器。视频可以随便找一个 minecraft 的宣传视频」)
+
+### 先查清楚的(装之前)
+- 原理:一面墙挂满「地图」画框拼成屏幕,插件把视频一帧一帧画进地图。**玩家不用装任何东西**。
+- 能装在 Paper 1.21.4 + Java 21 上的只有两个:VMC 0.5.17(屏幕只能出现在发命令的人面前、重启就没、声音要玩家装语音模组,不适合固定大屏)和 **CineFrame 1.21.11 那一版**(能用坐标钉在墙上、自动循环;它最新版要 Paper 26.2 + Java 25,装不上)。选了 CineFrame 1.21.11。
+- 拆开插件看过:
+  - 视频**没有声音就不做资源包**、不会给孩子弹「下载资源包」(日志原话 `No audio detected. Skipping audio pack build`)→ 视频去掉声音。
+  - 它会自己去作者网站下载 ffmpeg;插件文件夹里已有能用的 ffmpeg 就不下 → 改用 Debian 官方源装的 ffmpeg 复制进去。
+  - 原版 `cineframe.use` 是**所有玩家默认都有**(谁都能删屏幕、到处建屏幕),而且没声明要等 PacketEvents 先启动 → 改了插件里的 plugin.yml:`depend: [packetevents]`、`cineframe.use` 默认只给管理员。
+  - 屏幕信息只存在内存,**插件关掉时不收画框** → 每次重启后墙上留着 28 个它不认得的旧画框,要清掉再重新挂(见下面的自动程序)。
+- 网速:在电脑上用这段宣传片模拟了几种尺寸;上线后实测(见下)。
+
+### 装了什么
+- 插件:`plugins/packetevents-spigot-2.11.2.jar`(Modrinth 官方,sha1 `9762b404…`,选和 CineFrame 同期的版本)、`plugins/CineFrame-1.21.11-yy.jar`(Modrinth 原件 sha1 `321ebe04…`,只改了 plugin.yml 两处)。
+- `plugins/CineFrame/`:`config.yml`(收画面范围 64→**48 格**、每秒 **10** 张画面)、`media/trailer.mp4`(官方宣传片「Official Minecraft Trailer」1 分钟,转成 896×512、无声)、`ffmpeg`(Debian 官方 7.1.5 复制进来)。插件启动时自己从作者网站下了一个 16 MB 的颜色对照表 `rgb_to_map.bin`(数据文件)。
+- 系统:`apt install ffmpeg`。
+- 方块(出生点金字塔正南、池塘南岸沙丘,管理员保护区 #1 里):磨制黑石墙 x4..12 y68..73 z46(54 块)、两根磨制黑石墙柱 x4 / x12 y64..67(4+3 块,x12 y64 原来是沙子)、屏幕前一排看不见的光源 x5..11 y69..72 z44(28 块,晚上画面也亮)。屏幕 **7 格宽 × 4 格高**,朝北对着出生点,画框挂在 z45。从出生点草坪看越过池塘边那棵小树。
+- 自动挂屏幕:`/usr/local/sbin/mc-cinema-up` + `mc-cinema.timer`(每 2 分钟看一眼,文件在本仓库 `server/cinema/`)。每次服务器启动后:先问插件有没有屏幕 → 没有就清掉旧画框 → 等 90 秒、借一个在线的 AI 机器人(插件规定「开始放屏幕」必须由在线玩家发起,临时给它 2 分钟权限)放屏幕 → 打开循环 → 核对 28 个画框后记下「这次启动挂好了」。
+
+### 实测(13:17~13:30)
+- 插件启动无报错;三个机器人照常通过 nLogin 登录(nLogin 自带一份 PacketEvents,两份互不影响)。
+- 临时把麦豆放到屏幕前当观众,量服务器发给它的数据:**屏幕暂停 8 KB/秒,播放 539 KB/秒** → 每个站在屏幕 48 格内的人多收约 **0.53 MB/秒(约 4 兆网速)**;没人在 48 格内时不发。服务器解码视频约占一个核的 10%。测完麦豆原样送回(第一次送回的命令格式不对,手动补送了一次)。
+- 画面核对:临时连一个观察号 `CineCheck01`(不注册、原地不动)收屏幕画面,按画框位置拼回去 → 方向正确、28 块接缝对齐、颜色正常。观察号的存档文件已挪走(没删,放在备份夹)。
+- 重启实测:13:28 重启服务器 → 约 2 分钟后自动程序清掉 28 个旧画框、借小麦重新挂好、循环播放;现场只有 28 个画框、地上没有掉落物。
+
+### 没测到 / 要看的
+- 手机、Switch 玩家(基岩版)能不能看到动的画面:没有任何资料提到,要真人看。
+- 中国的孩子走香港中转,站在广场时每人多约 4 兆网速 —— 如果有人说广场卡,先把每秒画面数调低(10→6)或缩小收画面范围。
+
+### 回滚
+- 只停屏幕:`touch /var/lib/mc-cinema/OFF`,再 `cineframe:delmedia trailer.mp4@world,5,69,46-11,72,46`(或下次重启后自然没有,旧画框要 `minecraft:kill @e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]`)。
+- 整个拿掉:`systemctl disable --now mc-cinema.timer`,删 `plugins/CineFrame-1.21.11-yy.jar`、`plugins/packetevents-spigot-2.11.2.jar`、`plugins/CineFrame/`,重启;方块:`fill 4 64 46 12 73 46 air` + `setblock 12 64 46 sand` + `fill 5 69 44 11 72 44 air replace light`。

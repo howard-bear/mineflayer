@@ -1,0 +1,58 @@
+#!/bin/bash
+# 出生广场大屏(2026-10-12):插件(CineFrame)不记屏幕,服务器每次启动后要重新挂一次。
+# 由 mc-cinema.timer 每 2 分钟叫一次;这次启动已经挂好就什么都不做。
+# 关掉:touch /var/lib/mc-cinema/OFF(屏幕本身用 `cineframe:delmedia <id>` 拿掉)。
+# 插件规定「开始放屏幕」必须是在线玩家发起 → 借一个 AI 机器人(临时给 2 分钟权限)。
+set -u
+ST=/var/lib/mc-cinema
+R=/usr/local/bin/mc-rcon
+mkdir -p "$ST"
+[ -e "$ST/OFF" ] && exit 0
+[ "$(systemctl is-active minecraft)" = active ] || exit 0
+start=$(systemctl show minecraft -p ActiveEnterTimestampMonotonic --value)
+[ "$(cat "$ST/done" 2>/dev/null)" = "$start" ] && exit 0
+# 屏幕:墙在 z=46,x 5..11、y 69..72,朝北(对着出生点金字塔),画框挂在 z=45
+SEL='@e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]'
+frames() { $R "minecraft:execute if entity $SEL" | sed -nE 's/.*count: ([0-9]+).*/\1/p'; }
+
+# 先问插件「现在有没有屏幕」:autoreplay on 对已有屏幕是原样不变,没有屏幕会答 No active displays
+probe=$($R "cineframe:autoreplay on") || exit 0
+case "$probe" in
+  *"No active displays"*) ;;
+  *": ON"*) echo "插件里已经有屏幕($probe),记下"; echo "$start" > "$ST/done"; exit 0 ;;
+  *) echo "插件回话看不懂:$probe"; exit 0 ;;
+esac
+
+# 插件不收画框:重启后墙上留着上次的 28 个旧画框(插件已不认得、画面不动)→ 有就马上清掉
+n=$(frames); n=${n:-0}
+if [ "$n" != 0 ]; then
+  echo "屏幕位置上有 $n 个旧画框(插件不认得了),清掉"
+  $R "minecraft:kill $SEL" >/dev/null
+  $R "minecraft:kill @e[type=item,x=3,y=60,z=42,dx=10,dy=15,dz=6]" >/dev/null
+fi
+
+now_us=$(( $(cut -d. -f1 /proc/uptime) * 1000000 ))
+[ $(( now_us - start )) -gt 90000000 ] || { echo "服务器刚启动不到 90 秒(机器人还没回来),下次再挂"; exit 0; }
+
+L=$($R "minecraft:list") || exit 0
+bot=""
+for b in XiaoMai MaiNiang MaiDou; do
+  echo "$L" | grep -qw "$b" && { bot=$b; break; }
+done
+[ -n "$bot" ] || { echo "三个机器人都不在线,下次再挂"; exit 0; }
+
+echo "借 $bot 开始放屏幕"
+$R "lp user $bot permission settemp cineframe.use true 2m" >/dev/null
+$R "essentials:sudo $bot cineframe:media trailer.mp4"
+sleep 1
+$R "cineframe:mediacorners $bot 5 69 46 11 72 46 north"
+sleep 5
+$R "cineframe:autoreplay on"
+$R "lp user $bot permission unsettemp cineframe.use" >/dev/null
+
+n=$(frames); n=${n:-0}
+if [ "$n" = 28 ]; then
+  echo "挂好了:28 个画框,循环播放"; echo "$start" > "$ST/done"
+else
+  echo "没挂成:画框 $n 个(应为 28),2 分钟后再试"
+fi

@@ -1,0 +1,9 @@
+[Unit]
+Description=出生广场大屏:每 2 分钟看一眼要不要重新挂
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
