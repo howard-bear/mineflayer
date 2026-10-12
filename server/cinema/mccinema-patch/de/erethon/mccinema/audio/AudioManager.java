@@ -675,7 +675,7 @@ public class AudioManager {
         AudioChunk chunk = chunks.get(index);
         String key = SOUND_NAMESPACE + ":" + videoId + ".chunk_" + chunk.index();
         for (Player player : screen.getViewers()) {
-            player.playSound(location, key, SoundCategory.RECORDS, 1.0f, 1.0f);
+            player.playSound(location, key, SoundCategory.RECORDS, (float) plugin.getConfig().getDouble("audio.volume", 1.0), 1.0f); // 羊羊补丁:音量可配
         }
     }
 

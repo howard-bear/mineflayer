@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""出生广场大屏(CineFrame 插件)—— 后台「大屏」页的执行端(root 跑)。
+"""出生广场大屏(MCCinema 插件,羊羊修补版)—— 后台「大屏」页的执行端(root 跑)。
 
-  mc-cinema tick    mc-cinema.timer 每 2 分钟:服务器启动后把屏幕挂上、按「播放时段」开停、换成最新的轮播片、写状态
-  mc-cinema regen   mc-cinema-regen.path(后台保存/上传完会碰 cinema.req):转码新视频、按顺序拼成一条轮播片、
-                    改每秒画面数/收画面范围、马上换屏幕
+  mc-cinema tick    mc-cinema.timer 每 2 分钟:服务器启动后开播、按「播放时段」开停、写状态
+  mc-cinema regen   mc-cinema-regen.path(后台保存/上传完会碰 cinema.req):转码新视频(带声音)、按顺序拼成一条轮播片、
+                    换上屏幕、生成进服声音包写进 server.properties(重启后生效)
 
-为什么是「拼成一条片」:插件一块屏幕只能循环放一个文件;拼起来让它整条循环,
-没人在附近时插件自己暂停、有人来了自己接着播,这套逻辑不受影响。
-
-插件的几个脾气(2026-10-12 实测/读代码):
-  · 屏幕只存在内存,重启后墙上留着 28 个它不认得的旧画框 → 挂之前先清;
-  · 「开始放屏幕」只能由在线玩家发起 → 借一个 AI 机器人,临时给 2 分钟权限;
-  · 挂好后只放第一张当封面,要叫一次 play 才开始;
-  · 右键点画框会转 90° → 挂好就把 28 个画框钉死(Fixed);
-  · `cineframe:autoreplay on` 对已有屏幕原样不变、没有屏幕会答 No active displays → 当探针用。
+v3(2026-10-12):屏幕从 CineFrame 换成 MCCinema,因为要放视频原声(Owner:「按進服時一次給聲音包的方式做吧」)。
+  · 声音:每段视频的声音由插件切成 5 秒一段,打成声音包;玩家【进服时】从 server.properties 一次拿到(在进服的加载画面里完成),
+    游戏里不再中途推包(中途推包客户端会整体重载,Owner 试看时嫌体验差)。所以新视频的声音要等服务器重启后才有。
+  · 画面只发给屏幕附近的人、附近没人自动暂停、有人来了从这一段声音的开头接着放、放完自动从头 —— 这些是插件补丁(yy2/yy3)做的。
+  · 为什么还是「拼成一条片」:插件一块屏幕循环放一个文件;拼起来整条循环最稳。
 停用:后台把「大屏开关」关掉;或 touch /var/lib/mc-cinema/OFF(这个只给维护用,后台看不到)。
 """
 import fcntl
@@ -25,6 +21,8 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
+import zipfile
 
 PANEL = '/var/lib/mc-panel/cinema'          # 后台(mcpanel 账号)可写:设置、上传、缩略图、状态
 SETTINGS = PANEL + '/cinema.json'
@@ -33,17 +31,16 @@ UPLOADS = PANEL + '/uploads'
 THUMBS = PANEL + '/thumbs'
 ST = '/var/lib/mc-cinema'                    # 本程序自己的状态
 CLIPS = ST + '/clips'                        # 转好的单段(minecraft 账号写)
-MEDIA = '/opt/minecraft/plugins/CineFrame/media'
-CFG = '/opt/minecraft/plugins/CineFrame/config.yml'
+MCC = '/opt/minecraft/plugins/MCCinema'
+MEDIA = MCC + '/videos'                      # 轮播片放这儿(插件从这里读)
+MCC_CFG = MCC + '/config.yml'
+SCREEN = 'front'                             # 正面那块屏幕(墙在 z=46,画框 z=45 朝北对着出生点)
+CHUNK_S = 5                                  # 声音每 5 秒一段
 RCON = '/usr/local/bin/mc-rcon'
 LOCK = '/run/lock/mc-cinema.lock'
 
-W, H, SRC_FPS = 896, 512, 20                 # 屏幕 7×4 格,每格 128×128;片子统一 20 帧/秒
+W, H = 896, 512                              # 屏幕 7×4 格,每格 128×128
 MAX_DUR = 20 * 60                            # 单段最长用 20 分钟
-BOX = '@e[type=item_frame,x=5,y=69,z=45,dx=6,dy=3,dz=0]'
-ITEMS_AROUND = '@e[type=item,x=3,y=60,z=42,dx=10,dy=15,dz=6]'
-CORNERS = '5 69 46 11 72 46 north'
-BOTS = ('XiaoMai', 'MaiNiang', 'MaiDou')
 FITS = {
     'pad': f'scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black',
     'crop': f'scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H}',
@@ -64,11 +61,6 @@ def rcon(cmd):
         return re.sub('§.', '', (p.stdout or '') + (p.stderr or '')).strip()
     except Exception as e:
         return f'(rcon 出错 {e})'
-
-
-def frames():
-    m = re.search(r'count: (\d+)', rcon(f'minecraft:execute if entity {BOX}'))
-    return int(m.group(1)) if m else 0
 
 
 def server_start():
@@ -111,12 +103,18 @@ def write_text(p, s):
     os.replace(p + '.tmp', p)
 
 
+def video_id(name):
+    """插件给每个视频文件起的编号(声音包里的声音名、缓存目录都用它)"""
+    return re.sub(r'[^a-zA-Z0-9]', '_', name).lower()
+
+
 # ---------------- 设置 ----------------
 def load_settings():
     s = read_json(SETTINGS, {})
     out = {
         'rev': int(s.get('rev') or 0),
         'enabled': bool(s.get('enabled', True)),
+        'audio': bool(s.get('audio', True)),
         'fps': min(20, max(1, int(s.get('fps') or 10))),
         'range': min(128, max(16, int(s.get('range') or 48))),
         'hours': {'on': bool((s.get('hours') or {}).get('on')),
@@ -171,19 +169,16 @@ def save_status(st, msg=None):
     write_json(STATUS, st)
 
 
-# ---------------- 插件配置(每秒画面数 / 收画面范围,要重启服务器才生效) ----------------
-def cfg_values():
-    t = read_text(CFG)
-    f = re.search(r'^cineframe-map-fps:\s*(\d+)', t, re.M)
-    r = re.search(r'^cineframe-packet-range-blocks:\s*(\d+)', t, re.M)
-    return (int(f.group(1)) if f else None, int(r.group(1)) if r else None)
+# ---------------- 插件配置:收画面范围(要重启服务器才生效) ----------------
+def cfg_range():
+    m = re.search(r'^\s+viewer-distance:\s*(\d+)', read_text(MCC_CFG), re.M)
+    return int(m.group(1)) if m else None
 
 
-def cfg_apply(fps, rng):
-    with open(CFG, 'r+', encoding='utf-8') as f:            # 原地改(不换文件、不改属主)
+def cfg_apply_range(rng):
+    with open(MCC_CFG, 'r+', encoding='utf-8') as f:        # 原地改(不换文件、不改属主)
         t = f.read()
-        t2 = re.sub(r'^(cineframe-map-fps:\s*)\d+', rf'\g<1>{fps}', t, flags=re.M)
-        t2 = re.sub(r'^(cineframe-packet-range-blocks:\s*)\d+', rf'\g<1>{rng}', t2, flags=re.M)
+        t2 = re.sub(r'^(\s+viewer-distance:\s*)\d+', rf'\g<1>{rng}', t, flags=re.M)
         if t2 != t:
             f.seek(0)
             f.write(t2)
@@ -193,62 +188,127 @@ def cfg_apply(fps, rng):
 
 
 def live_values(start):
-    """这次服务器启动时插件读到的值:每次新启动的第一次 tick 记一份"""
+    """这次服务器启动时生效的值(收画面范围、进服声音包):每次新启动的第一次 tick 记一份"""
     lv = read_json(ST + '/live.json', {})
     if start and lv.get('start') != start:
-        fps, rng = cfg_values()
-        lv = {'start': start, 'fps': fps, 'range': rng}
+        lv = {'start': start, 'range': cfg_range(), 'packSha1': server_pack()[1]}
         write_json(ST + '/live.json', lv)
     return lv
 
 
-# ---------------- 屏幕 ----------------
-def mounted():
-    """问插件现在挂着哪块屏幕 → (问到了没有, 屏幕 id 或 None)
-    id 形如 playlist-xx.mp4@world,5,69,46-11,72,46。问不到(服务器没回话)时绝不能当成「没屏幕」去动它。"""
-    out = rcon('cineframe:autoreplay on')
-    if 'No active displays' in out:
-        return True, None
-    m = re.search(r'Auto replay for (\S+@\S+?): ON', out)
-    return (True, m.group(1)) if m else (False, out[:100])
+# ---------------- 进服声音包(Owner 10-12 定:声音包在进服时一次给,游戏里不再中途加载) ----------------
+PACK_DIR = ST + '/pack'                      # nginx 在 /etc/mc-cinema.conf 写的地址上提供这个目录
+SERVER_PROPS = '/opt/minecraft/server.properties'
+PACK_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'yangyang-spawn-cinema-sound'))   # 固定编号:客户端按它替换旧包
+PACK_PROMPT = '出生广场大屏的声音包(几 MB):点「是」,在大屏前就能听到视频原声;选「否」也能正常玩,只是大屏没声音。'
 
 
-def unmount(mid):
-    if mid:
-        rcon(f'cineframe:delmedia {mid}')
+def pack_url_base():
+    for line in read_text('/etc/mc-cinema.conf').splitlines():
+        if line.startswith('PACK_URL_BASE='):
+            return line.split('=', 1)[1].strip().rstrip('/') + '/'
+    return ''
+
+
+def build_login_pack(zips):
+    """把插件给每段视频生成的声音包(mcc_audio_*.zip)合成一个进服声音包。
+    同样的内容 → 同样的字节(固定文件顺序和时间)→ 同样的校验码,客户端不会重复下载。返回 (文件名, sha1, 声音段数)"""
+    sounds, files = {}, {}
+    for z in zips:
+        with zipfile.ZipFile(z) as zf:
+            for n in zf.namelist():
+                if n == 'assets/mcc/sounds.json':
+                    sounds.update(json.loads(zf.read(n)))
+                elif n.startswith('assets/mcc/sounds/') and n.endswith('.ogg'):
+                    files[n] = zf.read(n)
+    os.makedirs(PACK_DIR, exist_ok=True)
+    tmp = PACK_DIR + '/.building.zip'
+    meta = {'pack': {'pack_format': 46, 'description': '羊羊出生广场大屏 · 视频原声'}}
+    with zipfile.ZipFile(tmp, 'w') as zo:
+        def put(name, data, comp):
+            zi = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            zi.compress_type = comp
+            zi.external_attr = 0o644 << 16
+            zo.writestr(zi, data)
+        put('pack.mcmeta', json.dumps(meta, ensure_ascii=False, sort_keys=True).encode(), zipfile.ZIP_DEFLATED)
+        put('assets/mcc/sounds.json', json.dumps(sounds, ensure_ascii=False, sort_keys=True, indent=1).encode(), zipfile.ZIP_DEFLATED)
+        for n in sorted(files):
+            put(n, files[n], zipfile.ZIP_STORED)     # ogg 本来就压缩过
+    sha1 = hashlib.sha1(open(tmp, 'rb').read()).hexdigest()
+    name = f'yangcinema-{sha1[:12]}.zip'
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(PACK_DIR, name))
+    return name, sha1, len(sounds)
+
+
+def props_escape(text):
+    return ''.join(c if ord(c) < 128 else '\\u%04x' % ord(c) for c in text)
+
+
+def set_server_pack(name, sha1):
+    """把进服声音包写进 server.properties(原地改,不换文件;下次重启生效)。name 为空 = 不给声音包"""
+    url = (pack_url_base() + name) if name else ''
+    prompt = props_escape(json.dumps({'text': PACK_PROMPT, 'color': 'yellow'}, ensure_ascii=False)) if name else ''
+    want = {'resource-pack': url, 'resource-pack-sha1': sha1 if name else '', 'resource-pack-id': PACK_ID if name else '',
+            'resource-pack-prompt': prompt, 'require-resource-pack': 'false'}
+    with open(SERVER_PROPS, 'r+', encoding='utf-8') as f:
+        lines = f.read().split('\n')
+        seen = set()
+        for i, ln in enumerate(lines):
+            k = ln.split('=', 1)[0]
+            if k in want:
+                lines[i] = f'{k}={want[k]}'
+                seen.add(k)
+        for k in want:
+            if k not in seen:
+                lines.insert(len(lines) - 1 if lines and lines[-1] == '' else len(lines), f'{k}={want[k]}')
+        new = '\n'.join(lines)
+        f.seek(0)
+        f.write(new)
+        f.truncate()
+    return url
+
+
+def server_pack():
+    """server.properties 里现在写的声音包(下次重启生效的那个)→ (地址, sha1)"""
+    d = {}
+    for ln in read_text(SERVER_PROPS).splitlines():
+        if '=' in ln:
+            k, v = ln.split('=', 1)
+            d[k] = v
+    return d.get('resource-pack', ''), d.get('resource-pack-sha1', '')
+
+
+def update_login_pack(name, audio, st):
+    """轮播片 name 的声音包 → 进服声音包;audio 关 → 不给声音包。写进 server.properties,重启后生效"""
+    if not audio or not name:
+        if server_pack()[0]:
+            set_server_pack('', '')
+            save_status(st, '视频原声关了:进服不再给声音包(重启后生效)')
+        return
+    z = os.path.join(MCC, f'mcc_audio_{video_id(name)}.zip')
+    for _ in range(90):                                       # 插件开播时在后台提取声音、打包,最多等 3 分钟
+        if os.path.isfile(z) and os.path.getsize(z) > 0 and time.time() - os.path.getmtime(z) > 2:
+            break
         time.sleep(2)
-    if frames():
-        rcon(f'minecraft:kill {BOX}')
-        rcon(f'minecraft:kill {ITEMS_AROUND}')
+    if not os.path.isfile(z):
+        save_status(st, f'没等到插件给 {name} 生成声音包,下次再试')
+        return
+    pname, sha1, n = build_login_pack([z])
+    if server_pack()[1] != sha1:
+        set_server_pack(pname, sha1)
+        save_status(st, f'进服声音包换成新的({n} 段声音,{os.path.getsize(os.path.join(PACK_DIR, pname)) // 1024} KB)—— 服务器重启后新视频才有声音')
 
 
-def mount(name, s, st):
-    n = frames()
-    if n:
-        rcon(f'minecraft:kill {BOX}')
-        rcon(f'minecraft:kill {ITEMS_AROUND}')
-    lst = rcon('minecraft:list')
-    bot = next((b for b in BOTS if re.search(rf'\b{b}\b', lst)), None)
-    if not bot:
-        save_status(st, '三个机器人都不在线,屏幕等下次再挂')
-        return False
-    rcon(f'lp user {bot} permission settemp cineframe.use true 2m')
-    rcon(f'essentials:sudo {bot} cineframe:media {name}')
-    # 紧接着定位置:中间别停 —— 机器人在这期间点一下方块(挖东西)就会把这次「开始放屏幕」用掉(10-12 14:34 实测一次)
-    out = rcon(f'cineframe:mediacorners {bot} {CORNERS}')
-    time.sleep(5)
-    rcon('cineframe:autoreplay on')
-    if in_hours(s):
-        rcon('cineframe:play')
-        write_text(ST + '/sched', 'playing')
-    else:
-        write_text(ST + '/sched', 'paused')
-    rcon(f'minecraft:execute as {BOX} run data merge entity @s {{ItemRotation:0b,Fixed:1b}}')
-    rcon(f'lp user {bot} permission unsettemp cineframe.use')
-    n = frames()
-    ok = n == 28
-    save_status(st, f'挂屏幕 {name}(借 {bot}):{"成功,28 个画框" if ok else f"没挂成,画框 {n} 个;插件回话 {out[:80]}"}')
-    return ok
+# ---------------- 屏幕 ----------------
+def mcc_info():
+    """问插件屏幕现在什么状态 → (问到了没有, 状态 Playing/Paused/Idle/…, 正在放的文件)"""
+    out = rcon(f'mcc info {SCREEN}')
+    if 'Screen Info' not in out:
+        return False, out[:100], None
+    m = re.search(r'State:\s*(\w+)', out)
+    v = re.search(r'Video:\s*(\S+)', out)
+    return True, (m.group(1) if m else '?'), (v.group(1) if v else None)
 
 
 def want_name(s):
@@ -261,66 +321,59 @@ def want_name(s):
     return None
 
 
-def sched_check(s, st):
-    """已挂着:按播放时段开停(只在进出时段那一刻下命令)"""
-    sched = read_text(ST + '/sched', 'playing')
-    if in_hours(s) and sched == 'paused':
-        rcon('cineframe:play')
-        write_text(ST + '/sched', 'playing')
-        save_status(st, '到了播放时段,开始播放')
-    elif not in_hours(s) and sched != 'paused':
-        rcon('cineframe:pause')
-        write_text(ST + '/sched', 'paused')
-        save_status(st, '出了播放时段,暂停')
+def mount(name, s, st):
+    """开播(插件会自己:附近没人就暂停、有人来了接着放、放完从头)"""
+    flags = f'--audio {CHUNK_S} ' if s['audio'] else ''
+    out = rcon(f'mcc play {SCREEN} {name} {flags}--dither NONE')
+    for _ in range(60):
+        time.sleep(2)
+        ok, state, video = mcc_info()
+        if ok and video == name and state in ('Playing', 'Paused'):
+            save_status(st, f'开播 {name}{"(带原声)" if s["audio"] else "(无声)"}')
+            return True
+    save_status(st, f'开播 {name} 没成:插件回话 {out[:80]};现在 {state} {video}')
+    return False
 
 
-def reconcile(s, st, start, force):
-    """让墙上的屏幕和设置一致;返回现在挂着的文件名。
-    这次启动已经对上过(记号 mounted = 启动时刻|文件名)且不是 force,就只管播放时段、不去问插件。"""
+def reconcile(s, st, start):
+    """让屏幕和设置一致;返回现在在放的文件名(没在放返回 None)"""
     want = want_name(s)
-    marker = f'{start}|{want or ""}'
-    if not force and read_text(ST + '/mounted') == marker:
-        if want:
-            sched_check(s, st)
-        return want
-    ok, mid = mounted()
+    ok, state, video = mcc_info()
     if not ok:
-        save_status(st, f'问插件没得到回话,这次不动屏幕:{mid}')
+        save_status(st, f'问插件没得到回话,这次不动屏幕:{state}')
         return None
-    if mid and (not want or not mid.startswith(want + '@')):
-        unmount(mid)
-        save_status(st, f'拿掉屏幕 {mid.split("@")[0]}' + ('' if want else '(大屏关了或清单是空的)'))
-        mid = None
-    if not want:
-        if frames():
-            unmount(None)
+    running = state in ('Playing', 'Paused', 'Loading')
+    if not want or not in_hours(s):
+        if running:
+            rcon(f'mcc stop {SCREEN}')
+            save_status(st, '停播' + ('(大屏关了或清单是空的)' if not want else '(不在播放时段)'))
+        return None
+    marker = f'{start}|{want}|{int(s["audio"])}'
+    if running and video == want and read_text(ST + '/mounted') == marker:
+        return want
+    if mount(want, s, st):
         write_text(ST + '/mounted', marker)
-        return None
-    if not mid:
-        if (time.monotonic() * 1e6 - start) < 90e6:
-            return None                                       # 刚启动,机器人还没回来
-        if not mount(want, s, st):
-            return None
-    else:
-        sched_check(s, st)
-    write_text(ST + '/mounted', marker)
-    return want
+        return want
+    return None
 
 
 def screen_status(st, s, start, name):
-    fps, rng = cfg_values()
     lv = live_values(start) if start else {}
+    url, sha1 = server_pack()
     st['screen'] = {
         'server': bool(start), 'mounted': name or '', 'enabled': s['enabled'],
         'inHours': in_hours(s), 'checked': int(time.time()),
     }
-    st['cfg'] = {'fps': fps, 'range': rng, 'liveFps': lv.get('fps'), 'liveRange': lv.get('range'),
-                 'pendingRestart': bool(start) and (lv.get('fps'), lv.get('range')) != (fps, rng)}
+    rng = cfg_range()
+    st['cfg'] = {'fps': s['fps'], 'range': rng, 'liveRange': lv.get('range'),
+                 'pendingRestart': bool(start) and lv.get('range') != rng}
+    st['audio'] = {'on': s['audio'], 'pack': url.rsplit('/', 1)[-1] if url else '',
+                   'pendingRestart': bool(start) and lv.get('packSha1', '') != sha1}
 
 
 # ---------------- 背景音乐(唱片,数据包 yangcinema 放) ----------------
 def music_apply(s, st, start, playing):
-    """把背景音乐设置写进游戏的 storage yangcinema:cfg。playing = 屏幕挂着并且在播放时段里。
+    """把背景音乐设置写进游戏的 storage yangcinema:cfg。playing = 屏幕在放、在播放时段里、而且视频原声关着。
     vol = 范围/8:声音传到 2×范围 才消失(走近 range 格开始放,走远渐小);同样的设置这次启动已经写过就不再写。"""
     m = s['music']
     on = bool(m['on'] and m['tracks'] and playing)
@@ -334,40 +387,49 @@ def music_apply(s, st, start, playing):
     if 'Modified' not in out and 'Nothing changed' not in out:   # 「本来就是这样」也算写好了
         save_status(st, f'背景音乐设置没写进游戏:{out[:100]}')
         return
-    if not on:                                                # 关掉时,正在听的人也停下
-        rcon(f'execute as @a[x=8,y=70,z=45,distance=..{rng * 2 + 16}] run stopsound @s record')
+    if not on:                                                # 关掉时,正在听的人也停下(只停唱片,别把视频原声也停了 —— 两个都是「唱片」类声音)
+        for t in m['tracks']:
+            rcon(f'execute as @a[x=8,y=70,z=45,distance=..{rng * 2 + 16}] run stopsound @s record minecraft:music_disc.{t["id"]}')
         rcon('scoreboard players reset @a ycm_t')
     write_text(ST + '/music', key)
     st['music'] = {'on': on, 'n': len(m['tracks']), 'range': rng}
-    why = '' if on else ('(后台关着)' if not m['on'] else '(没选曲目)' if not m['tracks'] else '(大屏没在放或不在播放时段)')
+    why = '' if on else ('(后台关着)' if not m['on'] else '(没选曲目)' if not m['tracks']
+                         else '(视频原声开着)' if s['audio'] else '(大屏没在放或不在播放时段)')
     save_status(st, f'背景音乐:{"开" if on else "关"}{why},{len(m["tracks"])} 首,走近 {rng} 格开始放')
 
 
 # ---------------- 转码 / 拼片 ----------------
 def probe(path, as_mc=True):
-    cmd = (AS_MC if as_mc else []) + ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                                      '-show_entries', 'stream=width,height,codec_name:format=duration',
-                                      '-of', 'json', path]
+    cmd = (AS_MC if as_mc else []) + ['ffprobe', '-v', 'error', '-show_entries',
+                                      'stream=codec_type,width,height,codec_name:format=duration', '-of', 'json', path]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
         raise RuntimeError('认不出这个视频:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:120])
     j = json.loads(p.stdout or '{}')
-    if not j.get('streams'):
+    vs = [x for x in j.get('streams') or [] if x.get('codec_type') == 'video']
+    if not vs:
         raise RuntimeError('文件里没有画面(可能是纯音频或者坏文件)')
-    v = j['streams'][0]
+    v = vs[0]
     dur = float((j.get('format') or {}).get('duration') or 0)
-    return {'w': v.get('width'), 'h': v.get('height'), 'codec': v.get('codec_name'), 'dur': round(dur, 1)}
+    has_audio = any(x.get('codec_type') == 'audio' for x in j.get('streams') or [])
+    return {'w': v.get('width'), 'h': v.get('height'), 'codec': v.get('codec_name'), 'dur': round(dur, 1), 'audio': has_audio}
 
 
-def transcode(src, out, fit, total, st, cid):
+def transcode(src, out, fit, fps, has_audio, total, st, cid):
+    """转成屏幕尺寸 + 每秒 fps 张;声音统一成双声道 44.1k(没有声音的补一条静音),而且和画面一样长 ——
+    拼成轮播片时每段的声音都正好接在自己的画面后面,不会越拼越错位。"""
     tmp = out + '.tmp.mp4'
-    vf = FITS[fit] + f',setsar=1,fps={SRC_FPS},format=yuv420p'
-    cmd = AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', src,
-                   '-map', '0:v:0', '-an', '-sn', '-dn', '-t', str(MAX_DUR), '-vf', vf,
-                   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-profile:v', 'high', '-level', '4.0',
-                   '-g', '40', '-keyint_min', '40', '-sc_threshold', '0', '-fps_mode', 'cfr', '-r', str(SRC_FPS),
-                   '-video_track_timescale', '20480', '-threads', '2', '-movflags', '+faststart',
-                   '-progress', 'pipe:1', '-nostats', tmp]
+    vf = FITS[fit] + f',setsar=1,fps={fps},format=yuv420p'
+    cmd = AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', src]
+    if has_audio:
+        cmd += ['-map', '0:v:0', '-map', '0:a:0', '-af', 'aresample=44100,aformat=channel_layouts=stereo,apad']
+    else:
+        cmd += ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '0:v:0', '-map', '1:a:0']
+    cmd += ['-shortest', '-sn', '-dn', '-t', str(MAX_DUR), '-vf', vf,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-profile:v', 'high', '-level', '4.0',
+            '-g', str(fps * 2), '-keyint_min', str(fps * 2), '-sc_threshold', '0', '-fps_mode', 'cfr', '-r', str(fps),
+            '-video_track_timescale', '20480', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+            '-threads', '2', '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', tmp]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     last = 0
     for line in p.stdout:
@@ -423,46 +485,51 @@ def build_playlist(seq):
     return name
 
 
+def clip_path(it, fps):
+    return f'{CLIPS}/{it["id"]}-{it["fit"]}-{fps}.mp4'
+
+
 def regen_once(st):
     s = load_settings()
+    fps = s['fps']
     known = {it['id'] for it in s['items']}
-    # ① 每段转成屏幕尺寸(换了「画面适配」就重转)
+    # ① 每段转成屏幕尺寸(换了「画面适配」或「每秒画面数」就重转)
     for it in s['items']:
         cid = it['id']
         src = f'{UPLOADS}/{cid}.src'
-        clip = f'{CLIPS}/{cid}-{it["fit"]}.mp4'
+        clip = clip_path(it, fps)
         c = st['clips'].setdefault(cid, {})
         if not os.path.exists(src):
             c.update(state='error', err='原文件不见了(上传没完成?)请删掉重新上传')
             continue
-        if os.path.exists(clip) and c.get('state') == 'ok' and c.get('fit') == it['fit']:
+        if os.path.exists(clip) and c.get('state') == 'ok' and c.get('key') == f'{it["fit"]}-{fps}':
             if not os.path.exists(f'{THUMBS}/{cid}.jpg'):
                 make_thumb(clip, cid, c.get('dur') or 0)      # 缩略图丢了就补一张
             continue
         srcm = int(os.path.getmtime(src))
-        if c.get('state') == 'error' and c.get('errKey') == f'{srcm}-{it["fit"]}':
-            continue                                          # 同一个文件、同一种适配已经失败过,不白转
+        if c.get('state') == 'error' and c.get('errKey') == f'{srcm}-{it["fit"]}-{fps}':
+            continue                                          # 同一个文件、同样的设置已经失败过,不白转
         try:
             c.update(state='processing', pct=0, err='')
             save_status(st, f'开始处理「{it["title"]}」')
             info = probe(src)
             c['src'] = info
-            transcode(src, clip, it['fit'], info['dur'], st, cid)
+            transcode(src, clip, it['fit'], fps, info['audio'], info['dur'], st, cid)
             d = probe(clip)['dur']
             make_thumb(clip, cid, d)
-            c.update(state='ok', dur=d, fit=it['fit'], pct=100,
+            c.update(state='ok', dur=d, fit=it['fit'], key=f'{it["fit"]}-{fps}', pct=100, sound=info['audio'],
                      cut=bool(info['dur'] > MAX_DUR + 1))
-            save_status(st, f'处理好了「{it["title"]}」:{int(d // 60)} 分 {int(d % 60)} 秒')
+            save_status(st, f'处理好了「{it["title"]}」:{int(d // 60)} 分 {int(d % 60)} 秒{"" if info["audio"] else "(原片没有声音)"}')
         except Exception as e:
-            c.update(state='error', err=str(e)[:200], errKey=f'{srcm}-{it["fit"]}')
+            c.update(state='error', err=str(e)[:200], errKey=f'{srcm}-{it["fit"]}-{fps}')
             save_status(st, f'「{it["title"]}」处理失败:{e}')
-    # ② 清掉删掉的
+    # ② 清掉删掉的、不再用的
     for cid in list(st['clips']):
         if cid not in known:
             st['clips'].pop(cid, None)
+    wanted = {os.path.basename(clip_path(it, fps)) for it in s['items']}
     for p in os.listdir(CLIPS):
-        m = re.match(r'^([0-9a-f]{16})-(\w+)\.mp4$', p)
-        if m and not any(it['id'] == m.group(1) and it['fit'] == m.group(2) for it in s['items']):
+        if re.match(r'^[0-9a-f]{16}-\w+(-\d+)?\.mp4$', p) and p not in wanted:
             os.remove(os.path.join(CLIPS, p))
     for p in os.listdir(THUMBS):
         if p.endswith('.jpg') and p[:-4] not in known:
@@ -480,7 +547,7 @@ def regen_once(st):
     for it in s['items']:
         c = st['clips'].get(it['id'], {})
         if it['enabled'] and c.get('state') == 'ok':
-            seq += [f'{CLIPS}/{it["id"]}-{it["fit"]}.mp4'] * it['repeat']
+            seq += [clip_path(it, fps)] * it['repeat']
     if seq:
         try:
             name = build_playlist(seq)
@@ -496,22 +563,42 @@ def regen_once(st):
         if read_text(ST + '/current'):
             write_text(ST + '/current', '')
         st['playlist'] = {'file': '', 'dur': 0, 'count': 0, 'built': int(time.time())}
-    # ④ 每秒画面数 / 收画面范围
-    if cfg_apply(s['fps'], s['range']):
+    # ④ 收画面范围(要重启才生效)
+    if cfg_apply_range(s['range']):
         lv = read_json(ST + '/live.json', {})
-        if (lv.get('fps'), lv.get('range')) == (s['fps'], s['range']):
-            save_status(st, f'每秒画面数 {s["fps"]}、收画面范围 {s["range"]} 格:和现在实际生效的一样,不用重启')
+        if lv.get('range') == s['range']:
+            save_status(st, f'收画面范围 {s["range"]} 格:和现在实际生效的一样,不用重启')
         else:
-            save_status(st, f'每秒画面数 {s["fps"]}、收画面范围 {s["range"]} 格已写入,要重启服务器才生效')
+            save_status(st, f'收画面范围 {s["range"]} 格已写入,要重启服务器才生效')
     return s
 
 
-def cleanup_media(keep):
-    if keep is None:
+def cleanup(keep_names):
+    """删掉不再用的轮播片、插件的声音缓存、旧的进服声音包(正在用的、server.properties 里写的、这次启动生效的都留着)"""
+    if keep_names is None:
         return
+    keep_ids = {video_id(n) for n in keep_names if n}
     for p in os.listdir(MEDIA):
-        if re.match(r'^playlist-[0-9a-f]{10}\.mp4$', p) and p not in keep:
+        if re.match(r'^playlist-[0-9a-f]{10}\.mp4$', p) and p not in keep_names:
             os.remove(os.path.join(MEDIA, p))
+    for p in os.listdir(MCC):
+        m = re.match(r'^mcc_audio_(playlist_[0-9a-f]{10}_mp4)\.zip$', p)
+        if m and m.group(1) not in keep_ids:
+            os.remove(os.path.join(MCC, p))
+    adir = os.path.join(MCC, 'audio')
+    if os.path.isdir(adir):
+        for p in os.listdir(adir):
+            m = re.match(r'^(playlist_[0-9a-f]{10}_mp4)_', p)
+            if m and m.group(1) not in keep_ids:
+                shutil.rmtree(os.path.join(adir, p), ignore_errors=True)
+    keep_packs = {server_pack()[0].rsplit('/', 1)[-1]}
+    lv = read_json(ST + '/live.json', {})
+    if lv.get('packSha1'):
+        keep_packs.add(f'yangcinema-{lv["packSha1"][:12]}.zip')
+    if os.path.isdir(PACK_DIR):
+        for p in os.listdir(PACK_DIR):
+            if p.startswith('yangcinema-') and p not in keep_packs:
+                os.remove(os.path.join(PACK_DIR, p))
 
 
 # ---------------- 两个入口 ----------------
@@ -527,9 +614,9 @@ def cmd_tick():
         # 后台保存时 regen 正好在忙,那次通知被吞了 → 补叫一次(regen 自己会处理到最新版本)
         subprocess.run(['systemctl', 'start', '--no-block', 'mc-cinema-regen.service'])
     start = server_start()
-    name = reconcile(s, st, start, force=False) if start else None
+    name = reconcile(s, st, start) if start else None
     if start:
-        music_apply(s, st, start, bool(name) and in_hours(s))
+        music_apply(s, st, start, bool(name) and in_hours(s) and not s['audio'])
     screen_status(st, s, start, name)
     save_status(st)
 
@@ -549,21 +636,21 @@ def cmd_regen():
         done_rev = s['rev']
         write_text(ST + '/rev', str(done_rev))
     start = server_start()
-    name = reconcile(s, st, start, force=True) if start else None
-    st['busy'] = False                                        # 屏幕换好了才算忙完(后台页面靠这个停止自动刷新)
+    name = reconcile(s, st, start) if start else None
     if start:
-        music_apply(s, st, start, bool(name) and in_hours(s))
-    ok, mid = mounted() if start else (True, None)
-    keep = {read_text(ST + '/current')}
-    if not ok:
-        keep = None                                           # 问不到插件 → 这次不删任何轮播片
-    elif mid:
-        keep.add(mid.split('@')[0])
-    cleanup_media(keep)
+        update_login_pack(name or want_name(s), s['audio'], st)
+        music_apply(s, st, start, bool(name) and in_hours(s) and not s['audio'])
+    st['busy'] = False                                        # 屏幕换好了才算忙完(后台页面靠这个停止自动刷新)
+    ok, state, video = mcc_info() if start else (True, None, None)
+    cleanup({read_text(ST + '/current'), video} if ok else None)
     screen_status(st, s, start, name)
     save_status(st)
 
 
 if __name__ == '__main__':
     os.makedirs(CLIPS, exist_ok=True)
+    if len(sys.argv) > 2 and sys.argv[1] == 'loginpack':        # 手动:mc-cinema loginpack a.zip b.zip ...
+        n, h, k = build_login_pack(sys.argv[2:])
+        print('进服声音包', n, h, k, '段声音 →', set_server_pack(n, h), '(重启后生效)')
+        sys.exit(0)
     {'tick': cmd_tick, 'regen': cmd_regen}.get(sys.argv[1] if len(sys.argv) > 1 else '', lambda: sys.exit('用法:mc-cinema tick|regen'))()

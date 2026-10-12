@@ -132,8 +132,8 @@ public class PlayCommand extends ECommand {
 
         // Stop existing player if any
         VideoPlayer existingPlayer = plugin.getVideoPlayer(screen);
-        if (existingPlayer != null && existingPlayer.getState() == VideoPlayer.State.PLAYING) {
-            existingPlayer.stop();
+        if (existingPlayer != null) {           // 羊羊补丁:暂停中的旧播放也收掉(原版只停「播放中」的,暂停的会一直挂着)
+            existingPlayer.shutdown();
         }
 
         sender.sendMessage(MM.deserialize("<yellow>Loading video..."));
@@ -219,11 +219,11 @@ public class PlayCommand extends ECommand {
 
                         player.setOnComplete(p -> {
                             stopProgressBar();
-                            Bukkit.broadcast(MM.deserialize("<gray>Video playback complete."));
+                            plugin.getLogger().info("Video playback complete."); // 羊羊补丁:不在全服广播
                         });
 
                         player.setOnStateChange(p -> {
-                            if (p.getState() == VideoPlayer.State.PLAYING) {
+                            if (p.getState() == VideoPlayer.State.PLAYING && plugin.getConfig().getBoolean("playback.progress-bar", true)) {
                                 startProgressBar(p);
                             } else if (p.getState() == VideoPlayer.State.STOPPED || p.getState() == VideoPlayer.State.IDLE) {
                                 stopProgressBar();
