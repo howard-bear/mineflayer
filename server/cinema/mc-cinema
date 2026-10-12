@@ -10,6 +10,12 @@ v3(2026-10-12):屏幕从 CineFrame 换成 MCCinema,因为要放视频原声(Owne
     游戏里不再中途推包(中途推包客户端会整体重载,Owner 试看时嫌体验差)。所以新视频的声音要等服务器重启后才有。
   · 画面只发给屏幕附近的人、附近没人自动暂停、有人来了从这一段声音的开头接着放、放完自动从头 —— 这些是插件补丁(yy2/yy3)做的。
   · 为什么还是「拼成一条片」:插件一块屏幕循环放一个文件;拼起来整条循环最稳。
+v3.1(10-12 16:30):
+  · 画质:Owner「畫質怎麼變差了」—— v3 为省网速用了「不混色」(--dither NONE),脸上一块块色斑。同一段视频实测五种混色:
+    不混色 224 KB/秒、Bayer 398、Floyd-Steinberg(减弱)298、Atkinson 263、Stucki 260;画面上 Floyd-Steinberg 肤色最自然 → 默认用它。
+    后台「画质」可切回「省网速」(= 不混色)。
+  · 背面:Owner「讓這個屏幕的背面也同步播放吧 這樣兩邊都看得到」→ 墙背面挂 28 个普通画框,放和正面【同样编号】的地图(左右对调)。
+    画面是按地图编号发的,所以背面和正面永远是同一帧,不多占网速/CPU,声音也只有一份。见 mirror_back()。
 停用:后台把「大屏开关」关掉;或 touch /var/lib/mc-cinema/OFF(这个只给维护用,后台看不到)。
 """
 import fcntl
@@ -36,6 +42,8 @@ MEDIA = MCC + '/videos'                      # 轮播片放这儿(插件从这�
 MCC_CFG = MCC + '/config.yml'
 SCREEN = 'front'                             # 正面那块屏幕(墙在 z=46,画框 z=45 朝北对着出生点)
 CHUNK_S = 5                                  # 声音每 5 秒一段
+DITHER = {'fine': 'FLOYD_STEINBERG_REDUCED',  # 后台「画质」:清晰(用细小的彩色点混出颜色)
+          'flat': 'NONE'}                     #              省网速(直接取最接近的颜色,会有色块)
 RCON = '/usr/local/bin/mc-rcon'
 LOCK = '/run/lock/mc-cinema.lock'
 
@@ -115,6 +123,7 @@ def load_settings():
         'rev': int(s.get('rev') or 0),
         'enabled': bool(s.get('enabled', True)),
         'audio': bool(s.get('audio', True)),
+        'quality': s.get('quality') if s.get('quality') in DITHER else 'fine',
         'fps': min(20, max(1, int(s.get('fps') or 10))),
         'range': min(128, max(16, int(s.get('range') or 48))),
         'hours': {'on': bool((s.get('hours') or {}).get('on')),
@@ -324,12 +333,12 @@ def want_name(s):
 def mount(name, s, st):
     """开播(插件会自己:附近没人就暂停、有人来了接着放、放完从头)"""
     flags = f'--audio {CHUNK_S} ' if s['audio'] else ''
-    out = rcon(f'mcc play {SCREEN} {name} {flags}--dither NONE')
+    out = rcon(f'mcc play {SCREEN} {name} {flags}--dither {DITHER[s["quality"]]}')
     for _ in range(60):
         time.sleep(2)
         ok, state, video = mcc_info()
         if ok and video == name and state in ('Playing', 'Paused'):
-            save_status(st, f'开播 {name}{"(带原声)" if s["audio"] else "(无声)"}')
+            save_status(st, f'开播 {name}{"(带原声)" if s["audio"] else "(无声)"}' + ('' if s['quality'] == 'fine' else '(省网速画质)'))
             return True
     save_status(st, f'开播 {name} 没成:插件回话 {out[:80]};现在 {state} {video}')
     return False
@@ -348,13 +357,83 @@ def reconcile(s, st, start):
             rcon(f'mcc stop {SCREEN}')
             save_status(st, '停播' + ('(大屏关了或清单是空的)' if not want else '(不在播放时段)'))
         return None
-    marker = f'{start}|{want}|{int(s["audio"])}'
+    marker = f'{start}|{want}|{int(s["audio"])}|{s["quality"]}'
     if running and video == want and read_text(ST + '/mounted') == marker:
         return want
     if mount(want, s, st):
         write_text(ST + '/mounted', marker)
         return want
     return None
+
+
+def front_screen():
+    """插件存的 screens.yml 里正面那块屏幕:左下角 x/y、墙的 z、宽高(格)、朝向、每格的地图编号 {(列, 行): 编号}(第 0 行在最上面)。
+    服务器上没有 yaml 库,这个文件格式固定,按行读。读不懂返回 None"""
+    txt = read_text(MCC + '/screens.yml')
+    for b in re.split(r'\n  (?=[0-9a-f-]{36}:\n)', txt):
+        kv = dict(re.findall(r'^    (\w+): (\S+)$', b, re.M))
+        if kv.get('name') != SCREEN:
+            continue
+        tiles = {(int(tx), int(ty)): int(mid) for mid, tx, ty in
+                 re.findall(r'mapId: (\d+)\s+tileX: (\d+)\s+tileY: (\d+)', b)}
+        try:
+            return {'x': int(kv['originX']), 'y': int(kv['originY']), 'z': int(kv['originZ']),
+                    'w': int(kv['mapWidth']), 'h': int(kv['mapHeight']), 'facing': kv.get('facing'), 'tiles': tiles}
+        except (KeyError, ValueError):
+            return None
+    return None
+
+
+def mirror_back(st):
+    """墙背面的「镜像」:每一格放一个普通画框(朝南、看不见边框、拿不下来、打不坏),里面是和正面【同一个编号】的地图,左右对调
+    (从背面看,左手边是 x 小的那头)。插件按地图编号发画面,所以正面每收到一帧,背面自动是同一帧;不多占网速/CPU。
+    声音从屏幕中心发出,两边都听得到。插件不知道这些画框,不会去动它们。
+    已经对的格子不动;缺的/编号不对的/多出来的重挂。返回 True = 背面全对。"""
+    sc = front_screen()
+    if not sc or sc['facing'] != 'SOUTH' or len(sc['tiles']) != sc['w'] * sc['h']:
+        save_status(st, '背面:读不懂插件里正面屏幕的记录,这次不挂背面')
+        return False
+    xr, yb, wall = sc['x'], sc['y'], sc['z']                  # 正面看是左下角 = x 最大、y 最小
+    xl, yt = xr - (sc['w'] - 1), yb + sc['h'] - 1
+    # 先核一格:正面左上角(x 最大、y 最高)应该是第 0 列第 0 行 —— 对不上说明我对「哪格在哪」的理解错了,不挂
+    got = rcon(f'minecraft:data get entity @e[type=item_frame,x={xr},y={yt},z={wall - 1},dx=0,dy=0,dz=0,limit=1] Item.components."minecraft:map_id"')
+    if not got.endswith(f': {sc["tiles"][(0, 0)]}'):
+        save_status(st, f'背面:正面左上角画框的地图编号和插件记录对不上({got[-40:]}),这次不挂背面')
+        return False
+    bz = wall + 1
+    area = f'x={xl},y={yb},z={bz},dx={sc["w"] - 1},dy={sc["h"] - 1},dz=0'
+    whole = rcon(f'minecraft:execute if entity @e[type=item_frame,{area}]')
+    redo = []
+    for (tx, ty), mid in sorted(sc['tiles'].items()):
+        x, y = xl + tx, yt - ty
+        cell = f'x={x},y={y},z={bz},dx=0,dy=0,dz=0'
+        if whole.endswith(f'count: {len(sc["tiles"])}'):
+            got = rcon(f'minecraft:data get entity @e[type=item_frame,{cell},limit=1] Item.components."minecraft:map_id"')
+            if got.endswith(f': {mid}'):
+                continue
+        redo.append((x, y, mid, cell))
+    for x, y, mid, cell in redo:
+        rcon(f'minecraft:kill @e[type=item_frame,{cell}]')
+        rcon(f'minecraft:summon minecraft:item_frame {x} {y} {bz} {{Facing:3b,Fixed:1b,Invulnerable:1b,Invisible:1b,'
+             f'Item:{{id:"minecraft:filled_map",count:1,components:{{"minecraft:map_id":{mid}}}}}}}')
+    if redo:
+        # 万一拆画框掉了东西(地图/画框),捡掉;只认这两种,别的掉落物不碰
+        for it in ('filled_map', 'item_frame'):
+            rcon(f'minecraft:kill @e[type=item,x={xl - 2},y={yb - 6},z={bz - 1},dx={sc["w"] + 3},dy={sc["h"] + 8},dz=4,nbt={{Item:{{id:"minecraft:{it}"}}}}]')
+    # 背面画框前一排看不见的光源(和正面一样),晚上也看得清;只填空气格
+    rcon(f'minecraft:fill {xl} {yb} {bz + 1} {xr} {yt} {bz + 1} minecraft:light[level=15] replace minecraft:air')
+    bad = []
+    for (tx, ty), mid in sorted(sc['tiles'].items()):
+        x, y = xl + tx, yt - ty
+        cell = f'x={x},y={y},z={bz},dx=0,dy=0,dz=0'
+        got = rcon(f'minecraft:data get entity @e[type=item_frame,{cell},limit=1] Item.components."minecraft:map_id"')
+        if not got.endswith(f': {mid}'):
+            bad.append(f'({x},{y})')
+    n = rcon(f'minecraft:execute if entity @e[type=item_frame,{area}]')
+    ok = not bad and n.endswith(f'count: {len(sc["tiles"])}')
+    if redo or not ok:
+        save_status(st, f'背面:重挂了 {len(redo)} 格' + ('' if ok else f';核对没过:{" ".join(bad[:6])} {n[-20:]}'))
+    return ok
 
 
 def screen_status(st, s, start, name):
@@ -615,6 +694,9 @@ def cmd_tick():
         subprocess.run(['systemctl', 'start', '--no-block', 'mc-cinema-regen.service'])
     start = server_start()
     name = reconcile(s, st, start) if start else None
+    if name and read_text(ST + '/back') != str(start):         # 每次服务器启动后核一遍背面(平时不问,省得日志刷屏)
+        if mirror_back(st):
+            write_text(ST + '/back', str(start))
     if start:
         music_apply(s, st, start, bool(name) and in_hours(s) and not s['audio'])
     screen_status(st, s, start, name)
@@ -637,6 +719,8 @@ def cmd_regen():
         write_text(ST + '/rev', str(done_rev))
     start = server_start()
     name = reconcile(s, st, start) if start else None
+    if name and mirror_back(st):
+        write_text(ST + '/back', str(start))
     if start:
         update_login_pack(name or want_name(s), s['audio'], st)
         music_apply(s, st, start, bool(name) and in_hours(s) and not s['audio'])
