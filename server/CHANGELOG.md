@@ -4692,3 +4692,14 @@ sudo systemctl restart mcbot
 
 ### 回滚
 - 停试看:`systemctl stop mc-mcc-demo`。整个拿掉:删 `plugins/MCCinema-2.2.2.jar`、`plugins/MCCinema/`,关掉那条防火墙规则,重启;背面画框 `minecraft:kill @e[type=item_frame,x=5,y=69,z=47,dx=6,dy=3,dz=0]`,背面光源 `fill 5 69 48 11 72 48 air replace light`。
+
+### 15:30 追加:Owner 进去「顯示資源包下載失敗」→ 修补版 MCCinema-2.2.2-yy1
+- 服务器日志:Owner 的客户端**确实来下载了**,声音包也成功发出(1.2 MB)—— 是客户端校验没过。
+  真因是插件自己的毛病:**每次开播都重新打一次声音包 zip,字节变了,但告诉客户端的 SHA1 还是第一次登记的**(登记 `3eb4ef1b…`、文件实际 `fd55392b…`)→ 客户端报「下载失败」。我前面用观察号测时只回了「下载成功」、没核对校验码,所以没发现。
+- 另一个:Owner 的「2」是单声道 48 kHz,插件自带的转码器转不出声音(`Could not open audio codec`)→ 上传前先转成双声道 44.1 kHz。
+- 改了 2.2.2 源码的三个文件(GPL,改动放在本仓库 `server/cinema/mccinema-patch/`),只重编这三个类(对着服务器 1.21.4 的接口库编译通过)、换进原 jar:
+  1. `AudioManager`:同一段视频的声音包已经生成过就直接用,不重打(校验码不变,玩家也不用每次重下)。
+  2. `ResourcePackManager`:自己服务器托管时每次开播重新登记、重算校验码(双保险)。
+  3. `PlayCommand`:同一段视频的声音包用固定编号(原版每次随机,玩家身上越叠越多)。
+- 重启后实测:「2」转出了声音,观察号每 5 秒收到一段;告诉客户端的校验码 = 服务器上的文件 = 实际下载内容(`5dc10538…`),连放两次不变(日志 `Resource pack reused`)。
+- 试看轮播重新开了(唱片音乐暂停中)。
