@@ -19,6 +19,10 @@ v3.1(10-12 16:30):
 v3.2(10-12 16:50):轮播片的文件名只由「哪几段、什么顺序、几遍」决定(声音只由这个决定)。改画质 / 每秒画面数 / 画面适配时
   文件名不变 → 插件里的声音编号不变 → 玩家进服时拿到的声音包照样能用,不会因为调参数让大屏没声音到重启。
   画面变了就同名原地重拼(先写临时文件再换名;插件开着的旧文件不受影响),reconcile 的记号里带画面版本号,所以会重新开播。
+v3.3(10-12 18:20):Owner「大屏的視頻音畫不同步」。查实:每段转好的文件里声音比画面长 5~24 秒(apad 补的静音,
+  -shortest 没切干净),拼轮播片时下一段的画面紧接着上一段的画面,声音却要等上一段的(超长)声音完 → 从第二段起画面越来越超前。
+  改成:每段的长度取整到整秒(最后一张画面停一下,不到 1 秒),声音补齐/截到正好一样长;拼轮播片时画面照旧直接拼,
+  声音按每段的画面长度逐段精确到样本再拼成一条、重新编码一次。整秒长度和每秒画面数无关,所以改每秒画面数时声音不变(v3.2 的约定照旧)。
 停用:后台把「大屏开关」关掉;或 touch /var/lib/mc-cinema/OFF(这个只给维护用,后台看不到)。
 """
 import fcntl
@@ -291,21 +295,28 @@ def server_pack():
     return d.get('resource-pack', ''), d.get('resource-pack-sha1', '')
 
 
-def update_login_pack(name, audio, st):
-    """轮播片 name 的声音包 → 进服声音包;audio 关 → 不给声音包。写进 server.properties,重启后生效"""
+def update_login_pack(name, audio, st, wait=True):
+    """轮播片 name 的声音包 → 进服声音包;audio 关 → 不给声音包。写进 server.properties,重启后生效。
+    wait=False(每 2 分钟的 tick 用):插件还没切好就下次再说,不在这里干等。"""
     if not audio or not name:
         if server_pack()[0]:
             set_server_pack('', '')
             save_status(st, '视频原声关了:进服不再给声音包(重启后生效)')
         return
     z = os.path.join(MCC, f'mcc_audio_{video_id(name)}.zip')
-    for _ in range(90):                                       # 插件开播时在后台提取声音、打包,最多等 3 分钟
+    # 插件开播时在后台提取声音、打包:8 分钟的轮播片实测要 3 分多钟 → 按长度等(至少 3 分钟,最多 20 分钟)
+    dur = float((st.get('playlist') or {}).get('dur') or 0)
+    limit = max(180, min(1200, int(dur * 0.8))) if wait else 0
+    t0 = time.time()
+    while True:
         if os.path.isfile(z) and os.path.getsize(z) > 0 and time.time() - os.path.getmtime(z) > 2:
             break
+        if time.time() - t0 >= limit:
+            if wait:
+                save_status(st, f'等了 {limit // 60} 分钟插件还没给 {name} 生成声音包,之后每 2 分钟会再看一次')
+            return
         time.sleep(2)
-    if not os.path.isfile(z):
-        save_status(st, f'没等到插件给 {name} 生成声音包,下次再试')
-        return
+    write_text(ST + '/packfor', name)
     pname, sha1, n = build_login_pack([z])
     if server_pack()[1] != sha1:
         set_server_pack(pname, sha1)
@@ -483,7 +494,7 @@ def music_apply(s, st, start, playing):
 # ---------------- 转码 / 拼片 ----------------
 def probe(path, as_mc=True):
     cmd = (AS_MC if as_mc else []) + ['ffprobe', '-v', 'error', '-show_entries',
-                                      'stream=codec_type,width,height,codec_name:format=duration', '-of', 'json', path]
+                                      'stream=codec_type,width,height,codec_name,duration:format=duration', '-of', 'json', path]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
         raise RuntimeError('认不出这个视频:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:120])
@@ -494,20 +505,43 @@ def probe(path, as_mc=True):
     v = vs[0]
     dur = float((j.get('format') or {}).get('duration') or 0)
     has_audio = any(x.get('codec_type') == 'audio' for x in j.get('streams') or [])
-    return {'w': v.get('width'), 'h': v.get('height'), 'codec': v.get('codec_name'), 'dur': round(dur, 1), 'audio': has_audio}
+    try:
+        vdur = float(v.get('duration') or 0)
+    except ValueError:
+        vdur = 0.0
+    return {'w': v.get('width'), 'h': v.get('height'), 'codec': v.get('codec_name'), 'dur': round(dur, 1),
+            'vdur': round(vdur or dur, 3), 'audio': has_audio}
 
 
-def transcode(src, out, fit, fps, has_audio, total, st, cid):
+def seg_seconds(info):
+    """这一段在轮播里占几秒:画面长度向上取整到整秒(1 ~ MAX_DUR)。整秒 → 任何每秒画面数下画面张数都是整数,声音长度不随它变"""
+    import math
+    return max(1, min(MAX_DUR, math.ceil((info.get('vdur') or info.get('dur') or 1) - 0.02)))
+
+
+def video_frames(path):
+    p = subprocess.run(AS_MC + ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_packets',
+                                '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', path],
+                       capture_output=True, text=True, timeout=300)
+    try:
+        return int((p.stdout or '').strip().split(',')[0])
+    except ValueError:
+        raise RuntimeError(f'数不出 {os.path.basename(path)} 有几张画面')
+
+
+def transcode(src, out, fit, fps, has_audio, total, st, cid, seg):
     """转成屏幕尺寸 + 每秒 fps 张;声音统一成双声道 44.1k(没有声音的补一条静音),而且和画面一样长 ——
     拼成轮播片时每段的声音都正好接在自己的画面后面,不会越拼越错位。"""
     tmp = out + '.tmp.mp4'
-    vf = FITS[fit] + f',setsar=1,fps={fps},format=yuv420p'
+    vf = FITS[fit] + f',setsar=1,fps={fps},format=yuv420p,tpad=stop_mode=clone:stop_duration={seg}'
+    ns = seg * 44100
     cmd = AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', src]
     if has_audio:
-        cmd += ['-map', '0:v:0', '-map', '0:a:0', '-af', 'aresample=44100,aformat=channel_layouts=stereo,apad']
+        cmd += ['-map', '0:v:0', '-map', '0:a:0',
+                '-af', f'aresample=44100,aformat=channel_layouts=stereo,apad=whole_len={ns},atrim=end_sample={ns}']
     else:
         cmd += ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '0:v:0', '-map', '1:a:0']
-    cmd += ['-shortest', '-sn', '-dn', '-t', str(MAX_DUR), '-vf', vf,
+    cmd += ['-sn', '-dn', '-t', str(seg), '-vf', vf,
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-profile:v', 'high', '-level', '4.0',
             '-g', str(fps * 2), '-keyint_min', str(fps * 2), '-sc_threshold', '0', '-fps_mode', 'cfr', '-r', str(fps),
             '-video_track_timescale', '20480', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
@@ -553,10 +587,10 @@ def playlist_vkey(name):
     return read_json(PL_VKEYS, {}).get(name, '')
 
 
-def build_playlist(seq):
+def build_playlist(seq, fps):
     """seq:按顺序(含重复)的 (段编号, 单段文件)。返回 (文件名, 这次有没有重拼)。
     文件名由「段编号的顺序」决定 —— 声音只由它决定;改画质/每秒画面数/画面适配只换画面,名字不变,声音包继续能用。"""
-    akey = '\n'.join(cid for cid, _ in seq)
+    akey = 'x2\n' + '\n'.join(cid for cid, _ in seq)      # x2 = v3.3 的精确声音(和以前的轮播片声音不一样 → 新名字)
     vkey = hashlib.sha1('\n'.join(f'{p}:{os.path.getsize(p)}' for _, p in seq).encode()).hexdigest()[:10]
     names = read_json(PL_NAMES, None)
     if names is None:
@@ -579,11 +613,38 @@ def build_playlist(seq):
             f.write(f"file '{p}'\n")
     os.chmod(lst, 0o644)
     tmp = os.path.join(MEDIA, f'.{name}.tmp.mp4')
-    p = subprocess.run(AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat',
-                                '-safe', '0', '-i', lst, '-c', 'copy', '-movflags', '+faststart', tmp],
-                       capture_output=True, text=True, timeout=1800)
-    if p.returncode != 0:
-        raise RuntimeError('拼轮播片失败:' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:160])
+    tmpv = os.path.join(MEDIA, f'.{name}.v.mp4')
+    tmpa = os.path.join(MEDIA, f'.{name}.a.m4a')
+
+    def run(cmd, what):
+        p = subprocess.run(AS_MC + ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + cmd,
+                           capture_output=True, text=True, timeout=3600)
+        if p.returncode != 0:
+            for f in (tmp, tmpv, tmpa):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            raise RuntimeError(f'拼轮播片失败({what}):' + (p.stderr.strip().splitlines() or ['未知原因'])[-1][:160])
+
+    # 画面:直接拼(每段都是同样的尺寸、每秒画面数,张数 = 整秒 × 每秒张数)
+    run(['-f', 'concat', '-safe', '0', '-i', lst, '-map', '0:v:0', '-an', '-c', 'copy', tmpv], '画面')
+    # 声音:每段按自己画面的长度补齐/截到正好那么多个样本,再接成一条,重新编码一次
+    frames = {p: video_frames(p) for p in {p for _, p in seq}}
+    inputs, parts = [], []
+    for i, (_, p) in enumerate(seq):
+        ns = round(frames[p] * 44100 / fps)
+        inputs += ['-i', p]
+        parts.append(f'[{i}:a:0]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                     f'apad=whole_len={ns},atrim=end_sample={ns},asetpts=N/SR/TB[a{i}]')
+    fc = ';'.join(parts) + ';' + ''.join(f'[a{i}]' for i in range(len(seq))) + f'concat=n={len(seq)}:v=0:a=1[aout]'
+    run(inputs + ['-filter_complex', fc, '-map', '[aout]', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', tmpa], '声音')
+    run(['-i', tmpv, '-i', tmpa, '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-movflags', '+faststart', tmp], '合在一起')
+    for f in (tmpv, tmpa):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
     os.replace(tmp, out)
     names = read_json(PL_NAMES, {})
     names[akey] = name
@@ -611,26 +672,30 @@ def regen_once(st):
         if not os.path.exists(src):
             c.update(state='error', err='原文件不见了(上传没完成?)请删掉重新上传')
             continue
-        if os.path.exists(clip) and c.get('state') == 'ok' and c.get('key') == f'{it["fit"]}-{fps}':
+        if os.path.exists(clip) and c.get('state') == 'ok' and c.get('key') == f'{it["fit"]}-{fps}-x2':
             if not os.path.exists(f'{THUMBS}/{cid}.jpg'):
                 make_thumb(clip, cid, c.get('dur') or 0)      # 缩略图丢了就补一张
             continue
         srcm = int(os.path.getmtime(src))
-        if c.get('state') == 'error' and c.get('errKey') == f'{srcm}-{it["fit"]}-{fps}':
+        if c.get('state') == 'error' and c.get('errKey') == f'{srcm}-{it["fit"]}-{fps}-x2':
             continue                                          # 同一个文件、同样的设置已经失败过,不白转
         try:
             c.update(state='processing', pct=0, err='')
             save_status(st, f'开始处理「{it["title"]}」')
             info = probe(src)
             c['src'] = info
-            transcode(src, clip, it['fit'], fps, info['audio'], info['dur'], st, cid)
-            d = probe(clip)['dur']
+            seg = seg_seconds(info)
+            transcode(src, clip, it['fit'], fps, info['audio'], info['dur'], st, cid, seg)
+            nf = video_frames(clip)
+            if nf != seg * fps:
+                raise RuntimeError(f'转出来的画面张数不对({nf},应该 {seg * fps})')
+            d = seg
             make_thumb(clip, cid, d)
-            c.update(state='ok', dur=d, fit=it['fit'], key=f'{it["fit"]}-{fps}', pct=100, sound=info['audio'],
+            c.update(state='ok', dur=d, fit=it['fit'], key=f'{it["fit"]}-{fps}-x2', pct=100, sound=info['audio'],
                      cut=bool(info['dur'] > MAX_DUR + 1))
             save_status(st, f'处理好了「{it["title"]}」:{int(d // 60)} 分 {int(d % 60)} 秒{"" if info["audio"] else "(原片没有声音)"}')
         except Exception as e:
-            c.update(state='error', err=str(e)[:200], errKey=f'{srcm}-{it["fit"]}-{fps}')
+            c.update(state='error', err=str(e)[:200], errKey=f'{srcm}-{it["fit"]}-{fps}-x2')
             save_status(st, f'「{it["title"]}」处理失败:{e}')
     # ② 清掉删掉的、不再用的
     for cid in list(st['clips']):
@@ -659,7 +724,7 @@ def regen_once(st):
             seq += [(it['id'], clip_path(it, fps))] * it['repeat']
     if seq:
         try:
-            name, rebuilt = build_playlist(seq)
+            name, rebuilt = build_playlist(seq, fps)
             if rebuilt and read_text(ST + '/current') == name:
                 save_status(st, '轮播片的画面重新拼好了(声音没变,不用重启)')
             if read_text(ST + '/current') != name:
@@ -726,6 +791,8 @@ def cmd_tick():
         subprocess.run(['systemctl', 'start', '--no-block', 'mc-cinema-regen.service'])
     start = server_start()
     name = reconcile(s, st, start) if start else None
+    if name and s['audio'] and read_text(ST + '/packfor') != name:
+        update_login_pack(name, True, st, wait=False)          # regen 没等到插件切好声音:这里补上(不干等)
     if name and read_text(ST + '/back') != str(start):         # 每次服务器启动后核一遍背面(平时不问,省得日志刷屏)
         if mirror_back(st):
             write_text(ST + '/back', str(start))
