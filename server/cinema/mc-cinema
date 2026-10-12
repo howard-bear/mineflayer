@@ -331,7 +331,7 @@ def music_apply(s, st, start, playing):
     if read_text(ST + '/music') == key:
         return
     out = rcon(f'data merge storage yangcinema:cfg {snbt}')
-    if 'Modified' not in out:
+    if 'Modified' not in out and 'Nothing changed' not in out:   # 「本来就是这样」也算写好了
         save_status(st, f'背景音乐设置没写进游戏:{out[:100]}')
         return
     if not on:                                                # 关掉时,正在听的人也停下
