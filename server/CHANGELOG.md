@@ -4934,3 +4934,7 @@ sudo systemctl restart mcbot
 ### 回滚
 - 羊羊:备份在 `~/strix-cleanup-20261020-201629/`(生成器、说明书、欢迎词、老麦设置、状态检测、sshd 设置、菜单、YangPortal 插件和配置);官网旧版在 `/var/www/_backups/`。
 - 香港中转:`/etc/systemd/system/mc-router.service.bak-20261020-111713` 换回 + daemon-reload + restart。
+
+### 补记 · DNS 改好后的实测(Owner 在 Cloudflare 改完)
+- `mc.v2good.com` → 162.128.180.134(灰色云,不经 Cloudflare 代理);`mcsm` / `mcsmd.v2good.com` 已删。1.1.1.1、8.8.8.8、阿里 DNS 223.5.5.5、114.114.114.114 四家都返回新地址。
+- 按域名实连(状态查询 + 基岩版心跳,不登录):mc.v2good.com、hk.v2good.com、mc.laogaiphoto.com、cn.laogaiphoto.com —— 电脑版 4/4 进羊羊 Paper 1.21.4,手机版 4/4 回羊羊的基岩版入口。
