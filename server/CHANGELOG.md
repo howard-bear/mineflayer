@@ -4909,3 +4909,28 @@ sudo systemctl restart mcbot
 
 ### 回滚
 - `~/mcbot/` 下有每一版的备份:`bot.real.js.7dfbb645-before-v141-20261016`(v140)、`…25a1f03a-before-v142…`(v141)、`…64439e72-before-v143…`(v142);用 deploy_nowait.sh(带 EXPECT_MD5)换回。
+
+## 2026-10-20 20:16–20:19 JST 🧹 清退 jbh:拆掉和青岛 Strix 的全部对接,老地址都改进羊羊(Owner:「我已經清退了jbh,包括他那邊青島的服務器的對接也要全部清理掉. 我們的官網上也要清理掉相關介紹, 然後把原來青島的遊戲服務器域名做成這樣: mc.v2good.com 指向mc.laogaiphoto.com的ip; hk.v2good.com指向cn.laogaiphoto.com的ip; 這樣不管哪個域名都能進來,官網上也寫好」)
+
+### 羊羊上拆掉的
+- **指南针菜单「世界传送」按钮 + Strix 子菜单**:改的是菜单生成器(它整份重写菜单,手工改会被抹),原第 13 格留空;子菜单文件挪进备份。⚠️ 生成器外面有一层壳,要往请求文件写 `go` 才会真生成(直接调用壳什么都不做)。
+- **空岛传送插件 YangPortal**:拆掉并重启(20:18,当时只有 AI 玩家在线)。它带「从 Strix 回来自动登录」,靠两台服务器共用的一个密钥签名 —— 这个密钥在 jbh 那边,留着等于给他留了一条能替任何玩家登录羊羊的路,所以没等第二天的例行重启。
+- **说明书 / 三语欢迎词**:「世界传送:去 Strix」那几句删掉(已经发出去的书改不了)。
+- **AI 村民老麦**:资料里「去别的服 → 世界传送去 Strix」删掉,菜单清单去掉「世界传送」;「空岛 / Strix / 世界传送」那条标准答案改成照实说「Strix 那边已经关了,现在只有羊羊这一个服;想去新地方挖矿点『资源世界』」(删掉的话孩子一问,模型会编)。
+- **官网**(play.v2good.com / play.laogaiphoto.com):去掉 Strix 卡片、「去 Strix 的世界逛逛」那一栏、底部 Strix 按钮和页脚的「+ Strix」;「空岛玩法」特色卡换成真有的「资源世界」;地址卡改成四行 —— 中国玩家 `cn.laogaiphoto.com`(也可以填 `hk.v2good.com`)、海外玩家 `mc.laogaiphoto.com`(也可以填 `mc.v2good.com`);玩法页去掉「去 Strix / 从 Strix 回来」,加上「老地址也照样能进」。中英日三语一起改。状态检测不再查青岛。
+- **jbh 的权限**:羊羊上他的账号 08-28 就锁了、过期了、钥匙冻结了,后台和地图名单里也早没有他;这次又去掉 sudo 组,sshd 的 `AllowUsers` 只留 howard,删掉「允许 jbh 用密码登录」那段(先 `sshd -t` 检查再 reload,之后新连接登录核过正常)。
+
+### 香港中转(mc-router)
+- `hk.v2good.com` 原来转去青岛 25565 → **改成转去羊羊**;再加 `--default` 也指向羊羊 —— 填 `cn.v2good.com`、直接填 IP、随便什么名字都能进羊羊(原来认不出的名字会被当场断开)。
+- 实测(状态查询,不登录):经香港填 cn.laogaiphoto.com / hk.v2good.com / cn.v2good.com / 直接填 IP / 随便编的名字,日本直连填 mc.laogaiphoto.com / mc.v2good.com —— 7 种都回羊羊的 Paper 1.21.4 和欢迎词。
+
+### 要 Owner 在 Cloudflare 做的(我没有 Cloudflare 权限)
+- `mc.v2good.com`:A 记录从青岛改成羊羊(灰色云 / DNS only)。`hk.v2good.com` 本来就指香港中转,不用改。
+- 删掉 `mcsm.v2good.com`、`mcsmd.v2good.com`(指着青岛,是给 Strix 的面板用的)。
+
+### 青岛机(TwoSheep 技术主管管)
+- 要清的东西列成交接单给 Owner 转交:root 上 jbh 的钥匙、frps 给 strix-server 开的那批公网端口、他 10-04 加的 wc.prescado.com 和 usage 转发、给 Strix 面板配的 nginx 站点、10-16 的 sshpass 和 10022 端口。MC 项目从此完全不需要青岛机。
+
+### 回滚
+- 羊羊:备份在 `~/strix-cleanup-20261020-201629/`(生成器、说明书、欢迎词、老麦设置、状态检测、sshd 设置、菜单、YangPortal 插件和配置);官网旧版在 `/var/www/_backups/`。
+- 香港中转:`/etc/systemd/system/mc-router.service.bak-20261020-111713` 换回 + daemon-reload + restart。
