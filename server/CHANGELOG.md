@@ -5135,3 +5135,10 @@ sudo systemctl restart mcbot
 ### 回滚
 - 防火墙:日本服 `ufw delete deny from 176.65.148.0/23`;香港 `ufw status numbered` 找两条 `MC scanner Pfcloud` 删掉。游戏封禁:`minecraft:pardon-ip 176.65.148.253`。
 - 账号和存档:`~/mcai-deploy/backup/scanner-junk-20261021-200516/`(`files.tar.gz` 按原路径解回去;`nlogin.db` 是删之前的登录库;`list.json` 是名单)。
+
+### 补记 · 20:58 JST 后台名单里的怪名字(Owner:「我這邊後台數據還是有很多英文+數字的玩家呀」)
+- 后台「玩家管理」的名单读的是游戏的「见过的玩家」缓存(`usercache.json`)。游戏开着时,每有人登录一次,它就把内存里那份名单整个写回去 —— 所以开着游戏改这个文件没用,下一次有人登录就写回来了。
+- 名单 247 个名字逐个查了「从哪来、在服里干过什么、注册没有」:除了那 194 个,又查实 9 个扫服号 —— `Cornbread2100_`、`shepan`、`scanned`、`scanner672715`(也是那家德国机房的地址)、`MCoCTO124968`、`mCoCTo1199477`、`KIKINCoreqr4`、`Beerooski`(别的机房)、`bcpnomdstdbtjhma`(从没真进来过)。都是零操作、没注册。它们的存档 50 个文件先备份再删(`~/mcai-deploy/backup/scanner-junk2-20261021-205810/`)。
+- **每天 05:00 的自动重启**改成「停下 → 清一次性名单 → 再开」:`/usr/local/bin/mc-restart` 里 `systemctl restart minecraft` 拆成 `stop` / `/usr/local/bin/mc-junk-clean` / `start`。`mc-junk-clean` 只在 `/opt/minecraft/.junk-clean.json` 存在、**而且游戏停着**时才动(开着就只记一行「这回不动」),按名字/编号从名单里去掉、删掉又冒出来的存档,干完把名单文件改名作废。拿名单副本空跑过:247 → 44,剩下的全是真人、三个 AI 和我们自己的两个测试号。**10-22 05:00 那次重启真正执行。**
+- 没动、留着观察:几个零星的外国名字(挪威家庭宽带一个、机房/VPN 一个、注册过还动过方块的一个),看不出是扫服号。
+- 回滚:`cp /usr/local/bin/mc-restart.bak-20261021-junkclean /usr/local/bin/mc-restart`;名单在 `usercache.json.bak-<时间>`;日志 `/var/log/mc-junk-clean.log`。
