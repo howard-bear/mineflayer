@@ -10376,3 +10376,18 @@ sudo systemctl restart mcbot
 - Java 证书库:把 `/root/ops638/java-cacerts.bak-20261022` 放回 `/etc/ssl/certs/java/cacerts`。
 - 自动更新:删掉 `/etc/apt/apt.conf.d/20auto-upgrades` 和 `52twosheep-security-only`。
 - 内核:开机菜单里选旧内核 6.12.94,它还装着。
+
+### 补记 · 07:19–07:25 JST 撤掉桌面(Owner:「同意撤桌面,做吧」)
+- 按模拟时那份清单删了 **326 个桌面相关的包**:GNOME、图形登录界面、打印、局域网发现、Firefox、LibreOffice 等。已装包 2072 → 1746。开机改成不进图形界面。
+- **删前的保险**:
+  1. 备份了软件包清单、apt 标记和整个 `/etc`;
+  2. 保留清单里的 260 个包正式标成「手动装的」;
+  3. 真删前再模拟一次,必须和审查过的清单一字不差才放行;
+  4. 登录插件要用的密码加密库 `libargon2-1`、网络管理、ffmpeg、字体都在保留名单里。
+- **删后重启一次验证**,停服约 1.5 分钟。实测结果:
+  - 系统正常、没有失败的服务、网卡地址不变;
+  - 4 个进服地址都能进,地图能开;
+  - 三个 AI 用密码登录成功;
+  - 大屏用的 ffmpeg 实际转码试跑正常。
+  - 桌面原来常驻约 1.2 GB 内存,现在没了;打印和局域网发现的端口也关掉了。
+- 回滚:备份在 `/root/ops638/desk-exec-20261022-071940/`(`selections.txt` / `versions.txt` 可逐包装回);图形界面开机用 `systemctl set-default graphical.target`。
