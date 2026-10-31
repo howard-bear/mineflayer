@@ -10638,3 +10638,16 @@ sudo systemctl restart mcbot
 
 - 线上:`bot.real.js` md5 `f458cf968691`(没动)、`aiwriter.js` `549cc64d979c`、`brain.js` `5ac3ecd07da6`。
 - 回滚:`~/planoff/aiwriter.js.before-v161-*`、`~/planoff/brain.js.before-v161b-*`,换回去后重启三个机器人。
+
+---
+
+## 2026-10-31 22:33 JST 🗑️ 撤掉服务器上的 Claude Code(Owner:「服务器上的claude code删除掉吧 不想用了」)
+
+- **背景**:服务器上的 Claude Code(10-01 装的,用来写复杂脚本、审脚本、每 5 小时写总结)从 10-29 18:25 起登录过期,之后一直全部失败。Owner 决定不再用。
+- **做了三件事**(都能撤回):
+  1. 打开总开关 `~/mcbot/CLAUDE_WRITE.off`:机器人每次写脚本前都会看这个开关和程序在不在,现在写脚本全部交给本地 qwen(上一条 v161 已修通)。不用重启机器人。
+  2. 删掉 howard 定时任务里「每 5 小时让 Claude 写总结」那一条(原来只有它这一条,备份在下面的文件夹里)。
+  3. 把 Claude Code 程序、登录凭证和配置**整体挪进** `~/planoff/removed-claude-code-20261031-2233/`(254 MB,只有 howard 能打开)。现在服务器上找不到 claude 这个命令了。
+- **没动的**:机器人里调 Claude 的代码(claudewriter.js 等)留着不删,关着就不会用;以前的总结报告 `reports/` 和收件箱也留着。
+- **为什么是挪走、不是直接删**:按维护规矩,永久删除文件要 Owner 本人来做。确认不要了的话,可以在服务器上运行 `rm -rf ~/planoff/removed-claude-code-20261031-2233` 彻底删掉。
+- **撤回**:把文件夹里的东西挪回原处(`bin-claude-symlink` → `~/.local/bin/claude`、`share-claude` → `~/.local/share/claude`、`dot-claude` → `~/.claude`、`dot-claude.json` → `~/.claude.json`),用 `crontab crontab.bak` 恢复定时任务,再删掉 `CLAUDE_WRITE.off`。之后还要重新登录一次。
