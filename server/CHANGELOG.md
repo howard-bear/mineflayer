@@ -10700,3 +10700,38 @@ sudo systemctl restart mcbot
 - 结果:上线 5 分钟内两人各一趟到底 —— 麦豆 04:08:52 「隔墙有眼」、04:09:09 「结束了?」;麦娘 04:09:25 / 04:09:31。各记下 `/home stronghold`,0 死亡,都已回家。
 - 全家 **84 个**:小麦 30、麦娘 27、麦豆 27。三人故事页都到 14/15(只差「治愈僵尸村民」),末地门长亮。
 - 线上 `bot.real.js` `440c50afff5b`。回滚 `~/planoff/bot.real.js.b8e77b596624-before-v163c-*`。
+
+## 2026-11-04 手机版(基岩版)插件升级:新手机改走 NetherNet
+
+**起因**:Owner 问「最近是不是没有玩家来」,顺带查出手机版早就坏了 —— Geyser 停在 8-30 装的 2.11.2-b1233,只认基岩 26.0~26.45。
+- 9-15 手机更新到 26.50 起:能在列表里看到服、点进去被拒(`Outdated Geyser proxy`)。
+- **10-27 手机 26.60 起:Mojang 不再走老的 RakNet 连接**,改成 NetherNet —— 先用 **TCP** 问服务器「怎么连」(signaling,同时拿列表里显示的名字/人数),再用 UDP(WebRTC)进游戏。老插件 + 只开 UDP 的防火墙 → 新手机**连服务器列表都看不到,日志零痕迹**。
+- 服务器从 9-17 起每天在日志里提醒 Geyser 有更新,没人看。
+
+**改了什么(13:26 JST,只有三个机器人在线)**
+| | 改前 | 改后 |
+|---|---|---|
+| Geyser-Spigot | 2.11.2-b1233(Bedrock 26.0~26.45) | **2.12.1-b1284**(Bedrock 26.40~26.60,Java 26.3) |
+| floodgate | 2.2.5 b140 | 2.2.5 b141 |
+| ViaVersion / ViaBackwards | 5.12.0 | **5.12.2**(只修 26.2→26.3 的小毛病;Geyser 现在按 26.3 说话,这些修补正好用得上) |
+| Geyser 配置 | config-version 7,RakNet | 自动迁移到 12:`transport: nethernet`、`signaling.mode: builtin`、`advertise-addresses: []`(自动用 STUN 找到本机公网地址) |
+| 游戏机防火墙 | 19132 只放 UDP | **加放 19132/TCP**(signaling) |
+| 香港中转 | realm 本来就在 19132 同时转 TCP+UDP,只是防火墙只放了 UDP | **加放 19132/TCP**(只加不改,其他规则没动) |
+| 官网首页 + 玩法页(中英日) | — | 手机版那段加一句「先把手机上的我的世界更新到最新版;第一次进可能问要不要信任这个服务器,选信任/继续」 |
+
+下载核对:Geyser/Floodgate 用官方下载接口给的 sha256,Via 用 Modrinth 给的 sha1,四个 jar 都 `zipfile.testzip` 完整。换 jar 是在**游戏停着时**换的。
+
+**验证**
+- 启动日志:`Loading Geyser version 2.12.1-b1284`、`Built-in signaling started on http://0.0.0.0:19132`、STUN 两家都把本机映射到同一个公网地址;`ViaVersion 5.12.2 is now loaded`、floodgate b141;Geyser/Floodgate 无报错(只有 Via 一条「1.20.5~1.21.4 协议易被利用、建议升服务端」的常规提醒)。
+- `geyser version` → `Bedrock: 26.40 - 26.60`,`No updates available`。
+- 模拟新手机查服务器列表:对 `mc.laogaiphoto.com` 和 `cn.laogaiphoto.com`(经香港)各发 `GET /v1/join` → 都回 `200` + `{"name":"欢迎来到 我的世界乐园","protocol":2225,"version":"26.60","players":3,...}`。
+- 三个机器人重连正常(`viaversion list` 三个都在)。
+- **没验证到的**:真手机点进去玩(WebRTC 那一段)—— 要拿一台更新到最新版的手机实测。
+
+**代价/注意**
+- 手机版现在最低要 26.40,比这更老的手机进不来(要先更新)。
+- signaling 用的是普通 http,所以**第一次进会弹「是否信任这个服务器」**。想去掉要给 signaling 配 https 证书,但中国入口和日本入口是两个域名、中国入口那个名字解析到香港中转,证书不好签,先不做。
+- 中国孩子:问路(TCP)走香港中转,真正进游戏(UDP)按服务器告诉它的地址**直连日本**。香港要是再被大陆封 TCP(10-26 那种),手机版的中国入口也会断,可以改填日本入口。
+- 以后基岩版再出新版:先 `geyser version` 看「Bedrock: x - y」,再去官方下载页升 Geyser。
+
+**回滚**(1 分钟):`sudo bash ~/mcai-deploy/backup/geyser-20261104-132608/rollback.sh`(停服 → 换回四个旧 jar 和两份旧配置 → 开服 → 删游戏机上那条 19132/TCP);香港那条 `ufw delete allow 19132/tcp`;官网备份在 `/var/www/_backups/*bak-geyser-20261104-133003`。
